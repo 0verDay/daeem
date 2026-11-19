@@ -10,7 +10,7 @@
 ##   ⚠️ 它**向下长**：buff 上方是名称 / 头像，放不下。
 ##
 ## ★ 纯显示：`MOUSE_FILTER_IGNORE`。它一旦吃鼠标，就会把光标从 buff 方块上「抢走」，
-##   底下的 `mouse_exited` 立刻把浮窗收掉（与 hover_tip.gd 同一个坑）。
+##   底下的 `mouse_exited` 立刻把浮窗收掉（与卡牌悬停面板同一个坑）。
 extends Panel
 
 const UiLayoutRes = preload("res://view/ui_layout.gd")
@@ -104,7 +104,7 @@ func _relayout() -> void:
 
 ## 一个 Label 在 `w` 宽下把所有行画出来需要多高（px）。
 ## ★ 只认 `get_minimum_size()`：它和绘制走同一套排版；`Font.get_multiline_string_size`
-##   会少算中文行的行高（命令卡那块面板踩过，见 hover_tip.gd 的注释）。
+##   会少算中文行的行高（卡牌悬停面板踩过，见 ui_text.wrap 的注释）。
 func _measure(l: Label, w: float) -> float:
 	if l.text == "":
 		return 0.0

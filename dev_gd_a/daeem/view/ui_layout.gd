@@ -815,6 +815,79 @@ static func card_hover_push(ordinal: int, hover_ordinal: int) -> float:
 	return CARD_HOVER_PUSH_PX if ordinal > hover_ordinal else -CARD_HOVER_PUSH_PX
 
 
+## 悬停放大倍率（命令卡 / 科技牌 / 悬停面板定位共用同一个数）。
+const CARD_HOVER_SCALE := 1.6
+
+
+## ------------------------------------------------------------------
+## ★★ 卡牌悬停面板的几何（2026.11.19）
+##
+## 面板**固定放在牌的左侧**，**顶边与卡面顶边对齐**（用户口径，第二轮）：
+##   · 不再按「卡在左半边 / 右半边」选边；
+##   · 不再竖直居中 —— 面板顶边 = 牌的悬停姿势顶边，向下长。
+## ★ 将领额外在**右侧**再开一块「将领特性」面板（`CARD_HOVER_TRAIT_W`），
+##   同样顶对齐；其余卡牌只有左侧那一块。
+##
+## ★ 与牌留 `CARD_HOVER_PANEL_GAP` 的净距：面板的**背牌 +9px、投影 ~15px、
+##   金色菱形 11px** 全都留在这段缝里 —— 所以面板（含装饰）永远不会盖住
+##   被悬停的那张牌本身。允许盖住别的牌，但**不允许盖住原卡**（用户口径）。
+## ★ 位置只按「牌的最终姿势」算（`card_pose_rect(hovered=true)`）：
+##   鼠标进入那一帧牌还在原位 / 刚被邻居让开，用当前 rect 会算歪。
+## ------------------------------------------------------------------
+
+## 主面板宽度（设计像素）。四类内容共用这一档宽：一句描述大致折成 2 行。
+const CARD_HOVER_PANEL_W := 300.0
+## 将领特性面板宽度（右侧那块，只有将领卡有）。
+const CARD_HOVER_TRAIT_W := 236.0
+## 面板边缘到卡牌视觉边缘的净距（容纳背牌 / 投影 / 菱形）。
+const CARD_HOVER_PANEL_GAP := 26.0
+## 贴屏幕边的最小留白。
+const CARD_HOVER_PANEL_MARGIN := 8.0
+
+
+## 第 `ordinal` 张牌在**最终姿势**下的屏幕矩形。
+##   @param hovered true = 悬停姿势（放大 1.6 + 抬起 28 + 摆正），false = 静止姿势
+##   @param xf      牌所在控件的 `get_global_transform_with_canvas()`
+## ★ 用「扇形原始矩形 + 支点 + 旋转 / 缩放」算，而不是读控件当前 `position`：
+##   悬停切换的 0.14s 里，邻牌还在从「让开位」往回收。
+static func card_pose_rect(ordinal: int, count: int, hovered: bool,
+		xf: Transform2D) -> Rect2:
+	var r := card_fan_local(ordinal, count)
+	var pivot := card_pivot(r.size)
+	var pos := r.position
+	var rot := card_fan_rotation(ordinal, count)
+	var s := 1.0
+	if hovered:
+		pos.y -= CARD_HOVER_RAISE_PX
+		rot = 0.0
+		s = CARD_HOVER_SCALE
+	var mn := Vector2(INF, INF)
+	var mx := Vector2(-INF, -INF)
+	for corner in [Vector2.ZERO, Vector2(r.size.x, 0.0), r.size, Vector2(0.0, r.size.y)]:
+		var q: Vector2 = pos + pivot + (corner - pivot).rotated(rot) * s
+		var sp: Vector2 = xf * q
+		mn = mn.min(sp)
+		mx = mx.max(sp)
+	return Rect2(mn, mx - mn)
+
+
+## 面板左上角位置（设计像素）。
+##   @param side  -1 = 放牌左侧（主面板），+1 = 放牌右侧（将领特性面板）
+## ★ 顶边与牌对齐；贴边时才夹进屏幕（1920 宽下左右都放得下）。
+static func card_hover_panel_position(card_rect: Rect2, panel_h: float,
+		view_size: Vector2, panel_w: float = CARD_HOVER_PANEL_W,
+		side: int = -1) -> Vector2:
+	var x: float = (card_rect.position.x - CARD_HOVER_PANEL_GAP - panel_w) \
+		if side < 0 else (card_rect.end.x + CARD_HOVER_PANEL_GAP)
+	x = clampf(x, CARD_HOVER_PANEL_MARGIN,
+		maxf(CARD_HOVER_PANEL_MARGIN, view_size.x - CARD_HOVER_PANEL_MARGIN - panel_w))
+	# ★ 顶对齐：面板顶边 = 牌的悬停姿势顶边（不是牌心）。
+	var y := card_rect.position.y
+	y = clampf(y, CARD_HOVER_PANEL_MARGIN,
+		maxf(CARD_HOVER_PANEL_MARGIN, view_size.y - CARD_HOVER_PANEL_MARGIN - panel_h))
+	return Vector2(x, y)
+
+
 ## ★★ 2026.11.17（用户口径）：**拖出手牌时，其余手牌往屏幕下方沉、并缩小**；
 ##   松手（取消 / 放回 / 生效）反向播回来。
 ##
@@ -1088,23 +1161,14 @@ const DETAIL_V2_RECT := Rect2(27.0, 794.0, 377.0, 260.0)
 
 
 ## ------------------------------------------------------------------
-## ★★ 悬停说明牌 = **左下角栏**（2026.11.16 从「命令卡正上方」搬到这里）
+## ★★ 卡牌悬停面板（2026.11.19）
 ##
-## 需求原话：「将所有的卡牌悬停文本放至左下角栏中（若在悬停卡牌时已有左下角栏，
-##           则卡牌悬停文本覆盖原有栏位）……面板大小完全相同样式相同」。
-##   ⇒ 悬停牌与左下详情牌**同一块矩形**（`DETAIL_V2_RECT`）、**同一套纸牌画法**
-##     （画在 `view/detail_v2.gd` 的 `draw_plate()`，两边共用一份，见 `view/hover_tip.gd`），
-##     只是悬停时它压在详情牌**之上**：有选中对象就把原栏目盖住，移开鼠标再露出来。
-##
-## ⚠️ 旧的「贴手牌正上方、按文本向上长」那套几何（`HOVER_W` / `hover_rect()` /
-##    `HOVER_BOTTOM` / `HOVER_MIN_H` / `HOVER_MAX_H` / `HOVER_GAP`）已随搬家删除：
-##    面板尺寸现在由 `DETAIL_V2_RECT` 定死，这里只剩「文字怎么排」三个数。
+## 需求原话：「为卡牌添加悬停面板……位置为卡牌左侧或右侧」。
+##   ⇒ 面板不再占用左下角栏，而是浮在**悬停那张牌的侧边**：几何在
+##     `CARD_HOVER_PANEL_*` / `card_pose_rect()` / `card_hover_panel_position()` 那一节。
+## ⚠️ 旧的「悬停说明牌 = 左下角栏」那套矩形（`HOVER_RECT` / `HOVER_PAD` /
+##    `HOVER_TITLE_H` / `HOVER_TITLE_GAP`）已随改版删除 —— 面板现在按内容长高。
 ## ------------------------------------------------------------------
-## 悬停牌矩形：**就是左下角栏**（同一块，改尺寸只改 `DETAIL_V2_RECT` 一处）
-const HOVER_RECT := DETAIL_V2_RECT
-const HOVER_PAD := 18.0                         # 文字离牌面的左 / 上留白
-const HOVER_TITLE_H := 26.0                     # 卡名那一行占多高（下面跟一条金线）
-const HOVER_TITLE_GAP := 10.0                   # 金线之后、精简文本之前的缝
 
 
 ## 新版底栏命中：详情用 616.5 宽，且**不再登记已删除的阵营占位**。

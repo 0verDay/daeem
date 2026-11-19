@@ -1610,6 +1610,7 @@
       },
 
       "dg_swordsman": {
+        "brief": "信念坚定的战士，对骑兵造成额外伤害，对近战减伤",
         "name": "乂字军披甲剑士",
         "icon": "剑",
         "sprite": "res://assets/test_units/SpearMan/spearman.png",
@@ -2713,6 +2714,7 @@
       "attackable": false,
       "vision": 5,
       "color": "#7d7466",
+      "brief": "挡住一切地面部队的去路",
       "desc": "木制城墙：填满整个地块；阻挡所有阵营的单位移动，但不阻挡远程攻击（箭矢 / 投掷物可以越过）"
     },
     "tower": {
@@ -2728,6 +2730,7 @@
       "damage": 12, "range": 3, "cooldown": 0.8,
       "vision": 12,
       "color": "#8d6e63",
+      "brief": "以箭雨压制靠近的敌人",
       "desc": "基础哨塔：对范围内最近的敌人造成单体伤害"
     },
     "farm": {
@@ -2743,6 +2746,7 @@
       "vision": 4,
       "food_per_sec": 0.5,
       "color": "#8f9a4a",
+      "brief": "为己方提供源源不断的粮食",
       "desc": "资源建筑：建在己方区划内，为全阵营提供粮食 +0.5/秒"
     },
     "stone_wall": {
@@ -2757,6 +2761,7 @@
       "attackable": false,
       "vision": 5,
       "color": "#9aa0a6",
+      "brief": "更厚的城墙，把要道彻底封死",
       "desc": "石制城墙：血量更高；阻挡所有阵营的单位移动，但不阻挡远程攻击"
     },
     "watch_tower": {
@@ -2772,6 +2777,7 @@
       "damage": 16, "range": 4, "cooldown": 0.7,
       "vision": 15,
       "color": "#b07d62",
+      "brief": "看得更远，也射得更准",
       "desc": "高级哨塔：攻击力 / 射程 / 视野更高"
     },
     "house": {
@@ -2788,6 +2794,7 @@
       "population_rate_per_sec": 0.03,
       "population_cap_bonus": 1,
       "color": "#b08a5a",
+      "brief": "让所在区划的人口慢慢增长",
       "desc": "资源建筑：建在己方区划内，使所在区划人口增长 +0.03/秒、人口上限 +1"
     },
     "mine": {
@@ -2803,6 +2810,7 @@
       "vision": 4,
       "gold_per_sec": 0.4,
       "color": "#7d7d85",
+      "brief": "从地下挖出源源不断的黄金",
       "desc": "资源建筑：建在己方区划内，为全阵营提供黄金 +0.4/秒"
     },
     "base": {
@@ -2819,6 +2827,7 @@
       "ranged_reduction": 0.9,
       "vision": 9,
       "color": "#4a90d9",
+      "brief": "势力的心脏，升级它来解锁更多",
       "desc": "开局自带，不可建造、不可拆除；会像防御塔一样攻击射程内的敌人"
     },
 
@@ -2859,6 +2868,7 @@
       "plague_from_level": 2,
       "plague_adjacent": true,
       "color": "#d8c9a3",
+      "brief": "传播信仰，赐予自由",
       "desc": "特殊建筑（仅教会军）：1 级——该区划内招募的己方单位获得「自由」；2 级——该区划与相邻区划获得「自由瘟疫」。每区划限一座，等级不能超过己方大本营"
     }
   },

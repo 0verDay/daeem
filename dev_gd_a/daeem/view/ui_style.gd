@@ -197,20 +197,21 @@ static func outline_style(border_color: Color, border_width: int = 2) -> StyleBo
 	return s
 
 
-## ★★ 悬停详情面板（住在命令卡**正上方**，见 ui_layout 的 HOVER_* 那一节）的底板。
+## ★★ 浮在地图上的小说明窗（buff 悬停浮窗用的底板，见 view/buff_tip.gd）。
 ##
 ## 与其它面板同一套深色半透明，但两处**有意不同**：
 ##   · 描边用 `accent_dim()`（那档淡金）而不是通用描边色 —— 它是**浮在地图上**的临时面板，
 ##     周围没有底栏那条深色衬底，亮线 + 半透明底会让它看着像地图上的一块脏斑；
-##   · 底色比底栏**再不透明一点**（0.86 → 0.93）：它只有 340 宽、又**浮在地图上**，
+##   · 底色比底栏**再不透明一点**（0.86 → 0.93）：它很窄、又**浮在地图上**，
 ##     地图的格子线与区块轮廓会从下面透上来，字（13 号）就糊了。
+## ★ 卡牌悬停面板不走这个 StyleBox：它是自绘的切角纸牌（`detail_v2.draw_plate`）。
 static func hover_panel() -> StyleBoxFlat:
 	var s := StyleBoxFlat.new()
 	s.bg_color = ThemeRes.panel_alpha_color(ThemeRes.PANEL_HOVER_TIP_ALPHA, true)
 	s.border_color = accent_dim()
 	s.set_border_width_all(1)
 	s.set_corner_radius_all(3)
-	s.set_content_margin_all(0.0)      # 内侧留白由 ui_layout.HOVER_PAD 定，子控件自己摆
+	s.set_content_margin_all(0.0)      # 内侧留白由调用方（buff_tip）自己摆
 	return s
 
 

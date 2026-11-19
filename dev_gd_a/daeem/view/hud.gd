@@ -47,6 +47,8 @@ const UpgradeRes = preload("res://logic/upgrade.gd")
 
 const UiLayoutRes = preload("res://view/ui_layout.gd")
 const UiStyleRes = preload("res://view/ui_style.gd")
+## ★ 动效开关（`animations_enabled()`）：卡牌悬停面板「等牌站稳再出现」要读它。
+const ThemeRes = preload("res://view/theme.gd")
 const SquadPanelRes = preload("res://view/squad_panel.gd")
 const DetailPanelRes = preload("res://view/detail_panel.gd")
 const DetailV2Res = preload("res://view/detail_v2.gd")
@@ -57,7 +59,8 @@ const CommandCardRes = preload("res://view/command_card.gd")
 const UnitCardIconRes = preload("res://view/unit_card_icon.gd")
 const PageTabsRes = preload("res://view/page_tabs.gd")
 const TechGridRes = preload("res://view/tech_grid.gd")
-const HoverTipRes = preload("res://view/hover_tip.gd")
+## ★★ 2026.11.19：卡牌悬停面板 —— 浮在**悬停那张牌的侧边**（取代原来左下角那块固定说明牌）。
+const CardHoverPanelRes = preload("res://view/card_hover_panel.gd")
 const MinimapRes = preload("res://view/minimap.gd")
 ## ★★ 左上角目标栏（战役 / 合作；M12.1 新增，2026.10.20 改为左上两行）。见 view/objective_panel.gd。
 const ObjectivePanelRes = preload("res://view/objective_panel.gd")
@@ -93,13 +96,10 @@ var faction_placeholder: PanelContainer = null
 var _detail_home_position := Vector2.ZERO
 var _detail_slide_tween: Tween = null
 ## ★★ 2026.11.16 第二轮（用户口径）：「所有左下面板在出现时都需要有**向右滑动**的出现动画」。
-##   左下角那两块（详情牌 / 悬停说明牌）共用这一套参数：
-##   从目标位置**左侧** `DETAIL_SLIDE_FROM_X` 出发，`DETAIL_SLIDE_SEC` 秒缓出到位。
+##   左下角详情牌用这一套参数：从目标位置**左侧** `DETAIL_SLIDE_FROM_X` 出发，
+##   `DETAIL_SLIDE_SEC` 秒缓出到位。（卡牌悬停面板在牌旁边淡入，不走这一条。）
 const DETAIL_SLIDE_SEC := 0.16
 const DETAIL_SLIDE_FROM_X := -72.0
-## 悬停说明牌的目标位置（建控件时量一次；只动 x，y 由锚点管）
-var _hover_home_position := Vector2.ZERO
-var _hover_slide_tween: Tween = null
 var command_card: Control = null
 var page_tabs: Control = null
 ## ★ 科技九格（盖在命令卡上，只有「科技」页才显示）。见 view/tech_grid.gd。
@@ -158,9 +158,17 @@ var drag_anchor_radius: float = 1.5
 ##    免得「拖起来又拖回去」也弹一句红字。
 var _drag_build_left_hand: bool = false
 var _recruit_play_context: Dictionary = {}
-## ★★ 悬停说明牌：住在**左下角栏**（= 详情牌那块矩形，尺寸与样式完全相同），
-##    悬停时压在详情牌之上把它盖住。见 view/hover_tip.gd 的文件头。
-var hover_tip: Control = null
+## ★★ 卡牌悬停面板：鼠标停在手牌 / 科技牌上时，浮在**牌的左侧**（顶边对齐）。
+##    见 view/card_hover_panel.gd（纯显示、不吃鼠标、不跟牌一起缩放）。
+var card_hover: Control = null
+## ★★ 将领卡的**第二块**面板：浮在牌的右侧，只列这位将领的特性（名称 + 说明）。
+##    其余卡牌没有这一块（`clear()` 掉）。
+var general_trait_panel: Control = null
+## ★★ 2026.11.19：面板要等牌**站稳**再出现（用户口径）。牌自己的抬起 / 放大是 0.14s，
+##    邻牌最迟再晚 0.025s 让开 ⇒ 0.18s 之后面板才淡入。中途换牌 / 移开 / 拖牌都会作废。
+const CARD_HOVER_SHOW_DELAY := 0.18
+## 「等牌站稳再弹」那一段计时（Tween；`_dismiss_hover` / 换牌会 kill）。
+var _hover_show_tween: Tween = null
 ## ★★ 左上角目标栏：有目标才显示（老路径 / 自由对战整块隐藏）。
 var objective_panel: Control = null
 ## ★★ 左下角小地图正上方的播报横幅（大本营升级；`ui.broadcast` 的尺寸与时长）。
@@ -378,9 +386,9 @@ func setup(p_cfg: ConfigRes, p_world, p_input, theme: Theme, p_camera_rig = null
 	_build_detail_panel()
 	_build_command_card()
 	_build_page_tabs()
-	# ★ 悬停面板最后建（在命令卡 / 科技九格**之上**）：它画在那两块的正上方，
-	#   万一以后谁把它的高度调过头，压住的是命令卡的上沿而不是被命令卡压住。
-	_build_hover_tip()
+	# ★ 悬停面板最后建（在命令卡 / 科技牌**之上**）：它画在牌的侧边，
+	#   z_index 也压过牌（见 view/card_hover_panel.gd）。
+	_build_card_hover()
 	_build_ai_panel()
 	_build_squad_panel()
 	# ★★ 选项页**最后建**：它是浮在别的 UI 之上的模态 overlay（z_index=200）
@@ -1095,10 +1103,15 @@ func _build_command_card() -> void:
 	_root.add_child(tech_grid)
 	tech_grid.setup()
 	tech_grid.cell_activated.connect(_on_tech_cell_activated)
+	# ★★ 2026.11.19：科技牌拖起来时，牌旁边的悬停说明也要立刻收起（与手牌同一条）。
+	tech_grid.cell_drag_started.connect(_on_tech_card_drag_started)
 	tech_grid.cell_drag_finished.connect(_on_tech_drag_finished)
 
 
 func _on_card_drag_started(entry: Dictionary, screen_pos: Vector2) -> void:
+	# ★★ 2026.11.19（用户口径）：「卡牌拖出时悬停面板应该消失」——
+	#   拖牌那一刻牌已经离开手牌位，旁边的说明再挂着就是在讲一张不存在的牌。
+	_dismiss_hover()
 	var kind := String(entry.get("type", ""))
 	if kind == "base_upgrade":
 		_begin_base_upgrade_drag(screen_pos)
@@ -1219,6 +1232,11 @@ func _on_card_drag_finished(entry: Dictionary, screen_pos: Vector2, index: int) 
 		command_card.play_drag_success(index, screen_pos, true)
 	else:
 		command_card.animate_card_back(index)
+
+
+## 科技牌拖起来：牌旁边的悬停说明立刻收起（与手牌同一条，见 `_on_card_drag_started`）。
+func _on_tech_card_drag_started(_id: String, _screen_pos: Vector2) -> void:
+	_dismiss_hover()
 
 
 func _on_tech_drag_finished(id: String, screen_pos: Vector2, _index: int) -> void:
@@ -1727,25 +1745,30 @@ func _build_page_tabs() -> void:
 	page_tabs.page_changed.connect(_on_page_changed)
 
 
-## ★★ 悬停说明牌 —— 卡牌悬停时写在**左下角栏**里的那块说明。
+## ★★ 卡牌悬停面板 —— 鼠标停在哪张手牌 / 科技牌上，就在**牌的左侧**浮一块说明。
 ##
-## 需求原话：「将所有的卡牌悬停文本放至左下角栏中（若在悬停卡牌时已有左下角栏，
-##           则卡牌悬停文本覆盖原有栏位）……面板大小完全相同样式相同」。
-##   ⇒ 矩形 / 牌面与详情牌同一套（见 view/hover_tip.gd），只是悬停时压在它上面。
+## 需求原话（2026.11.19）：「悬停面板的顶部需要与卡面的顶部对齐，同时悬停面板固定在
+##   卡面左侧显示」⇒ 面板顶边 = 牌顶边、永远在左侧（见 ui_layout.card_hover_panel_position）。
+##   再一轮：「将领卡牌的悬停……卡面右侧会额外出现一个显示其将领特性的面板」
+##   ⇒ 将领卡会同时开两块：左侧主面板（名称/造价/简述）+ 右侧特性面板。
 ##
-## ★ 两个控件的悬停**共用这一块面板**：命令卡的九格与科技页那九格在屏幕上逐像素
-##   重合（换页时看不出换了控件），分成两块就会出现「切页那一刻旧面板还没收掉」。
+## ★ 面板是纯显示（`MOUSE_FILTER_IGNORE`），盖住谁都不会抢谁的鼠标；
+##   位置按**牌的最终姿势**算（`cell_pose_rect(i, true)`），不读正在动的控件坐标。
+##
+## ★ 手牌与科技牌**共用**这两块面板：它们在屏幕上逐像素重合，
+##   分成两套就会出现「切页那一刻旧面板还没收掉」。
 ##
 ## ★ 接线只有两条：`cell_hovered` → 弹（`_on_hover_in`）、`cell_unhovered` → 收
-##   （`_on_hover_out`）。文案由 `_hover_detail()` 现取 —— 本控件不认识任何玩法概念，
+##   （`_on_hover_out`）。文案由 `_card_hover_content()` 现取 —— 本控件不认识任何玩法概念，
 ##   与 command_card / tech_grid 同一条边界（它们只报「第几格」）。
-func _build_hover_tip() -> void:
-	hover_tip = HoverTipRes.new()
-	_root.add_child(hover_tip)
-	# 字体要传进去：中文要按这个字体排，拿不到时退回引擎兜底字体（见 hover_tip.gd）
-	hover_tip.setup(_font)
-	# 滑入动画的目标位置（只认 x：y 由「贴底」锚点管，窗口缩放不会被拉走）
-	_hover_home_position = hover_tip.position
+func _build_card_hover() -> void:
+	card_hover = CardHoverPanelRes.new()
+	_root.add_child(card_hover)
+	card_hover.setup(_font, UiLayoutRes.CARD_HOVER_PANEL_W)
+	# 将领特性面板：同一套牌面，窄一点（236），挂在牌的右侧。
+	general_trait_panel = CardHoverPanelRes.new()
+	_root.add_child(general_trait_panel)
+	general_trait_panel.setup(_font, UiLayoutRes.CARD_HOVER_TRAIT_W)
 	command_card.cell_hovered.connect(_on_hover_in.bind("card"))
 	command_card.cell_unhovered.connect(_on_hover_out.bind("card"))
 	tech_grid.cell_hovered.connect(_on_hover_in.bind("tech"))
@@ -2286,44 +2309,106 @@ func _refresh_tech_grid(visible: bool) -> void:
 
 
 # ------------------------------------------------------------------
-# ★★ 悬停详情面板：内容（本版新增）
+# ★★ 卡牌悬停面板：内容（2026.11.19 重做）
 #
-# 需求原话：「为右下角面板中的按钮添加悬停显示……需要根据悬停详细信息文本动态缩放。
-#           目前只需要为**区域的特化，招募的单位 / 将领，科技，建筑**这些内容
-#           添加详细信息即可」。
-#   ⇒ 这一节只给这四类**格子内容**产出文案；其余（操作页对部队下达的那几条指令：
+# 需求原话：「面板内容：单位 = 名称 + 造价 + 标签 + 简短描述；建筑 = 名称 + 造价 + 简述；
+#   将领 = 名称 + 造价 + 特性 + 简述；科技 = 名称 + 简述」。
+#   ⇒ 这一节只给**手牌 / 科技牌**产出文案；其余（操作页对部队下达的那几条指令：
 #     移动 / 攻击 / 行军 / 停止）返回空字典 ⇒ **不弹面板**（而不是弹一块空的）。
 #
 # ★ 为什么文案在 hud 而不在两个格子控件里：
-#   与「拒因码 → 中文」同一条约定（见 recruit_reject_text 那一段）——**界面词只在这
-#   一个文件里**。command_card / tech_grid 只报「第几格」，数值与说明在这里按
-#   config 与**权威状态**现取，于是不会出现「界面写着旧数值」那种漂移。
+#   与「拒因码 → 中文」同一条约定 ——**界面词只在这一个文件里**。
+#   command_card / tech_grid 只报「第几格」，数值与说明在这里按 config 与
+#   **权威状态**现取，于是不会出现「界面写着旧数值」那种漂移。
 # ------------------------------------------------------------------
 
-## 鼠标进入某一格。@param src "card"（命令卡）/"tech"（科技九格）
+## 鼠标进入某一格。@param src "card"（命令卡）/"tech"（科技牌）
 func _on_hover_in(index: int, src: String) -> void:
 	_hover_src = src
 	_hover_index = index
-	_show_hover_card(_hover_detail(src, _hover_entry(src, index)))
+	var entry := _hover_entry(src, index)
+	# ★ 将领卡有两块：左侧主面板 + 右侧特性面板（`t` 为空 = 只有一块）。
+	_show_card_hover(_card_hover_content(src, entry), _trait_panel_content(src, entry),
+		src, index)
 
 
-## 把一份悬停内容铺到左下角栏那块说明牌上。
+## 把一份悬停内容铺到面板上。
 ##
-## ★★ **只有「从无到有」那一次才播滑入动画**：鼠标在同一页里换格子时内容是当场换掉的，
-##   再滑一次会看着像闪一下。空字典 = 这一格没有说明（操作页那几条部队指令）⇒ 收起来。
-func _show_hover_card(d: Dictionary) -> void:
-	if hover_tip == null:
+## ★★ 2026.11.19（用户口径）：「面板应当在卡牌**放大并移动稳定后**再出现」——
+##   所以第一次出现要等 `CARD_HOVER_SHOW_DELAY`（牌的抬起 / 放大 / 邻牌让开总共
+##   约 0.165s：`HOVER_RAISE_SEC 0.14 + 邻牌最迟 0.025`）。这段时间里：
+##     · 鼠标换到别的牌 / 移开 → 计时作废（`_dismiss_hover` 会 kill）；
+##     · 面板已经开着（同页换牌）→ **不等**，当场换内容与位置（牌在动，但面板按
+##       「最终姿势」定位，本来就不会被正在变大的牌压到；再闪一下反而像坏了）。
+## ★ 位置要的是「牌的**最终**姿势」：鼠标进入这一格的那一帧，牌还在从原位往上长、
+##   邻牌还在从让开位回收 —— 读控件当前坐标会把面板算歪，最后就是「面板压在原卡上」。
+##   所以走 `cell_pose_rect(i, true)`（见 ui_layout）。
+## ★ 空字典 = 这一格没有说明（操作页那几条部队指令）⇒ 收起来。
+func _show_card_hover(d: Dictionary, t: Dictionary, src: String, index: int) -> void:
+	if card_hover == null:
 		return
 	if d.is_empty():
-		hover_tip.clear()
-		_reset_hover_slide()
+		_dismiss_hover()
 		return
-	var was_visible: bool = hover_tip.showing()
-	hover_tip.show_card(String(d.get("title", "")), String(d.get("subtitle", "")),
-		d.get("cells", []), String(d.get("caption", "")), d.get("chips", []),
-		String(d.get("note", "")), String(d.get("body", "")))
-	if not was_visible:
-		_play_hover_slide_in()
+	# 已经开着：直接换内容 / 换位置，不重播出现动画，也不重新等。
+	if card_hover.showing() or _trait_panel_showing():
+		_cancel_hover_show()
+		_apply_card_hover(d, t, src, index)
+		return
+	_cancel_hover_show()
+	if not ThemeRes.animations_enabled():
+		_apply_card_hover(d, t, src, index)
+		return
+	# 等牌站稳再弹（`tween_interval` + 回调；中途换牌 / 离开会 kill 掉它）。
+	_hover_show_tween = create_tween()
+	_hover_show_tween.tween_interval(CARD_HOVER_SHOW_DELAY)
+	_hover_show_tween.tween_callback(
+		_reveal_card_hover.bind(d.duplicate(true), t.duplicate(true), src, index))
+
+
+## 延时到点：确认鼠标还停在同一格，再真正弹面板。
+func _reveal_card_hover(d: Dictionary, t: Dictionary, src: String, index: int) -> void:
+	_hover_show_tween = null
+	if card_hover == null or card_hover.showing():
+		return
+	if src != _hover_src or index != _hover_index:
+		return
+	_apply_card_hover(d, t, src, index)
+
+
+## 按「牌的最终姿势」把两块面板摆好：左 = 主面板，右 = 将领特性（`t` 空就收掉）。
+func _apply_card_hover(d: Dictionary, t: Dictionary, src: String, index: int) -> void:
+	var ctrl = _hover_cell_control(src, index)
+	if ctrl == null:
+		_dismiss_hover()
+		return
+	var rect: Rect2 = ctrl.cell_pose_rect(index, true)
+	if not d.is_empty():
+		card_hover.show_card(d, rect, view_size(), -1)
+	if general_trait_panel != null:
+		if t.is_empty():
+			general_trait_panel.clear()
+		else:
+			general_trait_panel.show_card(t, rect, view_size(), 1)
+
+
+func _trait_panel_showing() -> bool:
+	return general_trait_panel != null and general_trait_panel.showing()
+
+
+## 作废「等牌站稳再弹」那一段计时。
+func _cancel_hover_show() -> void:
+	if _hover_show_tween != null:
+		if _hover_show_tween.is_valid():
+			_hover_show_tween.kill()
+		_hover_show_tween = null
+
+
+## 某一格对应的控件（取「最终姿势矩形」用）。
+func _hover_cell_control(src: String, index: int) -> Control:
+	if src == "tech":
+		return tech_grid if tech_grid != null else null
+	return command_card if command_card != null else null
 
 
 ## 鼠标离开某一格。★ 只有「确实是我这一格」才收 —— 见 `_hover_src` 那段说明
@@ -2334,13 +2419,15 @@ func _on_hover_out(index: int, src: String) -> void:
 	_dismiss_hover()
 
 
-## 收起悬停说明牌，并清掉「现在是谁弹的」那个记号
+## 收起悬停面板（两块都收），并清掉「现在是谁弹的」那个记号
 func _dismiss_hover() -> void:
 	_hover_src = ""
 	_hover_index = -1
-	if hover_tip != null:
-		hover_tip.clear()
-	_reset_hover_slide()
+	_cancel_hover_show()
+	if card_hover != null:
+		card_hover.clear()
+	if general_trait_panel != null:
+		general_trait_panel.clear()
 
 
 # ------------------------------------------------------------------
@@ -2563,15 +2650,16 @@ func _hover_entry(src: String, index: int) -> Dictionary:
 	return command_card.entry_at(index) if command_card != null else {}
 
 
-## 某一格的悬停详情：`{title, body}`；**空字典 = 这一格没有详情**（不弹面板）。
+## 某一格的悬停内容：`{name, tag, cost, traits, desc, note}`；
+## **空字典 = 这一格没有说明**（不弹面板）。
 ##
-## 本版覆盖的四类（就是需求点的那四样）：
-##   · **建筑**         → `build`（建筑页的城墙 / 箭塔）+ 建筑那一格升级
-##                        （`building_upgrade` / 取消 / 已满级）
-##   · **招募单位 / 将领** → `recruit`（单位页：长枪兵 / 长弓兵 / 骑手）+
-##                        `zone_recruit`（招募页：池子抽出的那一手）
-##   · **科技**          → 科技九格（那一份数据没有 `type`，按 `src == "tech"` 分派）
-func _hover_detail(src: String, entry: Dictionary) -> Dictionary:
+## 覆盖的几类（就是需求点的那四样 + 兜底）：
+##   · **单位**   → `recruit`（单位页那几张兵种牌）/ `zone_recruit`（区划招募抽的一手）
+##   · **将领**   → `general_drag`（将领页拖到区划中心的那张牌）
+##   · **建筑**   → `build`（建筑页的可建建筑）
+##   · **科技**   → 科技牌（那份数据没有 `type`，按 `src == "tech"` 分派）
+##   · **兜底**   → 大本营升级 / 建造操作这类：名称 + 造价 + 一句结果/说明
+func _card_hover_content(src: String, entry: Dictionary) -> Dictionary:
 	if entry.is_empty():
 		return {}
 	if src == "tech":
@@ -2581,25 +2669,29 @@ func _hover_detail(src: String, entry: Dictionary) -> Dictionary:
 			return _hover_build(entry)
 		"base_upgrade":
 			return _hover_base_upgrade(entry)
-		"recruit", "zone_recruit", "general_drag":
+		"recruit", "zone_recruit":
+			# ★ 选中区划中心时「将领」页的牌也是 `zone_recruit` —— 按 kind 分到将领那一档。
+			if ConfigRes.general_index_of(String(entry.get("unit_kind", ""))) >= 0:
+				return _hover_general(entry)
 			return _hover_recruit(entry)
+		"general_drag":
+			return _hover_general(entry)
 		"building_upgrade", "building_upgrade_cancel", "building_upgrade_max", \
-				"building_demolish":
+				"building_respawn", "building_demolish":
 			return _hover_building(entry)
 	return {}
 
 
-## 一份悬停内容：`{title, subtitle, cells, caption, chips, note, body}`
-## —— 版式照详情牌那套「分隔」写法（卡名 / 副标题 → 金线 → 造价格 → 说明段落 → 特性小标题 + 胶囊），
-##   具体怎么画在 `view/hover_tip.gd`；本函数只负责「写什么」。
-##   @param cells 造价格 `[{label, value}]`（0~3 格；空数组 = 不画那一排）
-##   @param note  置灰原因（空串 = 不画；见 `_unit_lock_note` / `_tech_lock_note`）
-##   @param body  ★★ 2026.11.19：说明段落（长句，会折行；空串 = 不画）
-func _hover_card(title: String, subtitle: String, cells: Array = [],
-		caption: String = "", chips: Array = [], note: String = "",
-		body: String = "") -> Dictionary:
-	return {"title": title, "subtitle": subtitle, "cells": cells,
-		"caption": caption, "chips": chips, "note": note, "body": body}
+## 一份悬停内容：`{name, tag, cost, traits, desc, note}`
+## —— 画法在 `view/card_hover_panel.gd`，本函数只负责「写什么」。
+##   @param cost   造价格 `[{label, value}]`（空数组 = 不画那一排，科技就是这样）
+##   @param traits 特性胶囊文字（空数组 = 连小标题一起不画；只有将领有）
+##   @param desc   一句短描述（占位：见 `_unit_brief` / `_general_brief` 的注释）
+##   @param note   置灰原因（空串 = 不画）
+func _hover_data(name: String, tag: String, cost: Array = [], traits: Array = [],
+		desc: String = "", note: String = "") -> Dictionary:
+	return {"name": name, "tag": tag, "cost": cost, "traits": traits,
+		"desc": desc, "note": note}
 
 
 ## 条目里那一小份造价（招募表带过来的；缺了就是空 → 写成「免费」）
@@ -2608,9 +2700,9 @@ func _entry_cost(entry: Dictionary) -> Dictionary:
 	return v if typeof(v) == TYPE_DICTIONARY else {}
 
 
-## 造价 → 悬停牌上的**数值格**（与详情牌「编制 / 血量」同款：一格一个标签 + 一个数）。
-## ★ 只列真正花的那一两项（0 金不占一格）；都不花 = 一格「免费」。
-func _cost_cells(cost: Dictionary) -> Array:
+## 造价 → 悬停面板的紧凑「标签 + 数值」串（面板上一横排，不再是四个大格子）。
+## ★ 只列真正花的那一两项（0 金不占位）；都不花 = 一格「免费」。
+func _cost_pairs(cost: Dictionary) -> Array:
 	var out: Array = []
 	var food := float(cost.get("food", 0.0))
 	if food > 0.0:
@@ -2635,49 +2727,6 @@ func _class_short(ut: String) -> String:
 	if cls == ConfigRes.CLASS_SIEGE:
 		return cls_name                    # 器械不分远近
 	return ("远程" if cfg.unit_is_ranged(ut) else "近战") + cls_name
-
-
-## 一个兵种（含将领本人的光环）的**特性词**，每条以「+」收尾、只写方向不写数值。
-## ★ 数据源是 `unit_traits_of()` / `general_traits_at()` —— 与 combat 真正读的是同一份，
-##   所以不会出现「悬停里写着、实际不生效」。
-## ★ 顺序固定（特攻按大类 id 排序 → 远近减伤 → 免疫击退 → 将领特性按配置顺序），
-##   同一句不重复（兵种特性与将领光环撞车时只留一条）。
-func _unit_chips(ut: String, kind: String) -> Array:
-	var out: Array = []
-	if cfg.has_unit_type(ut):
-		var tr: Dictionary = cfg.unit_traits_of(ut)
-		var vs: Dictionary = tr.get("attack_vs_class", {})
-		var classes: Array = vs.keys()
-		classes.sort()
-		for c in classes:
-			if float(vs[c]) > 0.0:
-				out.append("对%s伤害+" % cfg.class_display_name(String(c)))
-		if float(tr.get("ranged_reduction", 0.0)) > 0.0:
-			out.append("远程伤害减免+")
-		if float(tr.get("melee_reduction", 0.0)) > 0.0:
-			out.append("近战伤害减免+")
-		if bool(tr.get("knockback_immune", false)):
-			out.append("免疫击退+")
-	var gidx: int = ConfigRes.general_index_of(kind)
-	if gidx >= 0:
-		for tid in cfg.general_traits_at(gidx):
-			var nm: String = cfg.general_trait_name(String(tid))
-			if nm != "":
-				out.append(nm + "+")
-	return _dedupe_keep_order(out)
-
-
-## 去重但保序（`Array` 没有现成 API；同一句只想出现一次）
-func _dedupe_keep_order(items: Array) -> Array:
-	var seen: Dictionary = {}
-	var out: Array = []
-	for it in items:
-		var s := String(it)
-		if seen.has(s):
-			continue
-		seen[s] = true
-		out.append(s)
-	return out
 
 
 ## 这一格要介绍的**兵种 id 列表**（一般就一个；组合条目是多个）。
@@ -2724,115 +2773,231 @@ func _hover_base_upgrade(entry: Dictionary) -> Dictionary:
 	var base = world.find_base_of(String(world.my_faction)) if world != null else null
 	var title := String(entry.get("name", "大本营"))
 	if base == null:
-		return _hover_card(title, "升级", [], "结果", ["大本营不存在"])
+		return _hover_data(title, "升级", [], [], "把这张牌拖到己方大本营上升级",
+			"大本营不存在")
 	var chips: Array = ["升到%d级" % (int(base.level) + 1)]
 	var note := ""
 	if not bool(entry.get("ready", true)):
 		note = _upgrade_reject_text(String(entry.get("lock_reason", "")), base)
-	return _hover_card(title, "升级", _cost_cells(world.building_upgrade_cost(base)),
-		"结果", chips, note, "把这张牌拖到己方大本营上升级")
+	var d := _hover_data(title, "升级", _cost_pairs(world.building_upgrade_cost(base)),
+		chips, "把这张牌拖到己方大本营上升级", note)
+	d["caption"] = "结 果"
+	return d
 
 
-## 建筑（建筑页那几格：木墙 / 哨塔 / 石墙 / 警戒塔）—— **造价格 + 远程免伤**。
-## ★ 数值本身仍然全在 config（`building.<type>.*`），只是不再铺进悬停。
+## 建筑（建筑页那几格：木墙 / 哨塔 / 石墙 / 警戒塔）—— 造价 + 一句说明。
+## ★ 说明优先取 `building.<type>.brief`（2026.11.19 新增的简述字段；占位阶段可以是空的），
+##   没写就退回原来那句长的 `desc`。
 func _hover_build(entry: Dictionary) -> Dictionary:
 	var t := String(entry.get("build_type", ""))
 	var cost: Variant = cfg.get_path_value("building.%s.cost" % t)
-	var chips: Array = []
-	if cfg.building_ranged_reduction(t) > 0.0:
-		chips.append("远程免伤+")
 	var note := ""
 	if not bool(entry.get("ready", true)):
 		# ★ 用 `min_base`（教堂 = 1）—— 写 tier 的话会显示「需 3 级大本营」，
 		#   而它其实开局就能造。
 		note = "需%s级大本营" % _fmt_num(float(entry.get("min_base", entry.get("tier", 1))))
-	return _hover_card(String(entry.get("name", "")), "建筑",
-		_cost_cells(cost if typeof(cost) == TYPE_DICTIONARY else {}),
-		"特性", chips, note)
+	return _hover_data(String(entry.get("name", "")), "建筑",
+		_cost_pairs(cost if typeof(cost) == TYPE_DICTIONARY else {}), [],
+		_building_brief(t), note)
 
 
-## 招募：单位页那几个兵种（`recruit`）+ 招募页 / 拖拽的将领（`zone_recruit` / `general_drag`）。
-## ★ 副标题 = 兵种名（近战步兵 / 远程骑兵…）；组合条目先写「×N」再列这一包的兵种。
-## ★ 特性胶囊 = 兵种自己的特性 + 将领本人的**光环特性名**（只写方向、不带数值）。
+## 建筑的简述：作者写的 `brief` 优先，否则用原来的 `desc`（占位阶段就这样）。
+func _building_brief(t: String) -> String:
+	if cfg == null:
+		return ""
+	var brief := _config_text("building.%s.brief" % t)
+	if brief.strip_edges() != "":
+		return brief
+	return _config_text("building.%s.desc" % t)
+
+
+## 招募：单位页那几个兵种（`recruit`）+ 区划招募抽的一手（`zone_recruit`）。
+## ★ 类别标签 = 兵种名（`近战·骑兵`）；组合条目先写「×N」再列这一包的兵种。
+## ★ 单位**不显示特性胶囊**（需求只要「名称 + 造价 + 标签 + 简述」）——
+##   特性折进那一句简述里（见 `_unit_brief`）。
 func _hover_recruit(entry: Dictionary) -> Dictionary:
 	var kind := String(entry.get("unit_kind", ""))
 	var types: Array = _unit_types_of(entry)
-	return _hover_card(String(entry.get("name", "")), _unit_subtitle(types),
-		_cost_cells(_entry_cost(entry)), "特性", _unit_chip_list(types, kind),
+	return _hover_data(String(entry.get("name", "")), _tag_of_types(types),
+		_cost_pairs(_entry_cost(entry)), [], _unit_brief(types, kind),
 		_unit_lock_note(entry))
 
 
-## 兵种名那一行（副标题）：「近战步兵」/「×3 近战步兵 · 远程步兵 · 近战骑兵」
-func _unit_subtitle(types: Array) -> String:
-	var classes: Array = []
+## 将领牌（`general_drag` / 区划里的将领）：左侧主面板只写名称 + 造价 + 简述。
+## ★ 2026.11.19（用户口径）：特性**不再挤在主面板里**，改由右侧那块
+##   `general_trait_panel` 单独展示（见 `_trait_panel_content`）。
+func _hover_general(entry: Dictionary) -> Dictionary:
+	var kind := String(entry.get("unit_kind", ""))
+	var types: Array = _unit_types_of(entry)
+	return _hover_data(String(entry.get("name", "")), "将领",
+		_cost_pairs(_entry_cost(entry)), [],
+		_general_brief(types, kind), _unit_lock_note(entry))
+
+
+## 将领卡右侧那块「将领特性」面板的内容：`{rows: [{name, desc}]}`。
+## **空字典 = 不弹**（不是将领 / 这位将领没有特性 / 是科技牌）。
+func _trait_panel_content(src: String, entry: Dictionary) -> Dictionary:
+	if entry.is_empty() or src == "tech":
+		return {}
+	if ConfigRes.general_index_of(String(entry.get("unit_kind", ""))) < 0:
+		return {}
+	var rows := _general_trait_rows(String(entry.get("unit_kind", "")))
+	if rows.is_empty():
+		return {}
+	return {"rows": rows}
+
+
+## 一位将领的特性清单：`[{name, desc}]`（数据源 `unit.general.trait_ids` ⊕
+## `unit.general_traits.<id>`，与实战读的是同一份）。
+func _general_trait_rows(kind: String) -> Array:
+	var out: Array = []
+	if cfg == null:
+		return out
+	var gidx: int = ConfigRes.general_index_of(kind)
+	if gidx < 0:
+		return out
+	for tid in cfg.general_traits_at(gidx):
+		var id := String(tid)
+		var nm: String = cfg.general_trait_name(id)
+		if nm == "":
+			continue
+		out.append({"name": nm, "desc": cfg.general_trait_desc(id)})
+	return out
+
+
+## 兵种标签那一行：`近战·骑兵` / `×3 近战·步兵 · 远程·步兵`。
+func _tag_of_types(types: Array) -> String:
+	var tags: Array = []
 	for t in types:
 		var cls: String = _class_short(String(t))
-		if cls != "" and not classes.has(cls):
-			classes.append(cls)
-	var sub := " · ".join(classes)
+		if cls == "":
+			continue
+		# 「近战骑兵」→「近战·骑兵」；「器械」不分远近，原样留着
+		if cls.begins_with("近战"):
+			cls = "近战·" + cls.substr(2)
+		elif cls.begins_with("远程"):
+			cls = "远程·" + cls.substr(2)
+		if not tags.has(cls):
+			tags.append(cls)
+	var sub := " · ".join(tags)
 	if types.size() > 1:
 		sub = "×%d %s" % [types.size(), sub]
 	return sub
 
 
-## 一包兵种合起来的特性胶囊（同一句只出现一次）。
-## ★ 将领光环只挂在「一位将领」这一格上：组合条目的 kind 是组合 id，查不到将领序号。
-func _unit_chip_list(types: Array, kind: String) -> Array:
-	var chips: Array = []
-	for t in types:
-		for chip in _unit_chips(String(t), kind if types.size() == 1 else ""):
-			chips.append(chip)
-	return _dedupe_keep_order(chips)
+## 一个兵的**一句简述**（占位阶段的写法：兵种 + 特性方向）。
+##
+## ★★ 文案来源顺序：
+##   ① `unit.types.<id>.brief` —— 2026.11.19 新增的简述字段（编辑器以后暴露；
+##      用户口径「先用占位文本，后续在编辑器中暴露出来字段」）；
+##   ② 没写 → 自动拼一句占位：「近战骑兵；对步兵造成额外伤害，受远程伤害减少。」
+##      （与用户给的示例「信念坚定的战士，对骑兵造成额外伤害，对近战减伤」同一句式）。
+## ★ 自动拼的部分只写**方向**、不带数值 —— 数值平衡一动，文案就过时了。
+func _unit_brief(types: Array, kind: String) -> String:
+	if types.is_empty():
+		return ""
+	if types.size() > 1:
+		return "一支混编部队：%s。" % _tag_of_types(types)
+	var ut := String(types[0])
+	if cfg == null or not cfg.has_unit_type(ut):
+		return ""
+	var authored := _config_text("unit.types.%s.brief" % ut)
+	if authored.strip_edges() != "":
+		return authored
+	var cls: String = _class_short(ut)
+	var phrases: Array = []
+	var tr: Dictionary = cfg.unit_traits_of(ut)
+	var vs: Variant = tr.get("attack_vs_class", {})
+	if typeof(vs) == TYPE_DICTIONARY:
+		var classes: Array = (vs as Dictionary).keys()
+		classes.sort()
+		for c in classes:
+			if float((vs as Dictionary)[c]) > 0.0:
+				phrases.append("对%s造成额外伤害" % cfg.class_display_name(String(c)))
+	if float(tr.get("ranged_reduction", 0.0)) > 0.0:
+		phrases.append("受远程伤害减少")
+	if float(tr.get("melee_reduction", 0.0)) > 0.0:
+		phrases.append("受近战伤害减少")
+	if bool(tr.get("knockback_immune", false)):
+		phrases.append("免疫击退")
+	if phrases.is_empty():
+		return "%s。" % cls if cls != "" else ""
+	# ★ 用「，」不用「；」：面板只有 300 宽，折行时「；」会让第一行只剩半句。
+	return "%s，%s。" % [cls, "，".join(phrases)]
 
 
-## 建筑操作那一格（升级 / 取消 / 已满级 / 重生中）—— 造价格 + 一句结果。
+## 将领本人的特性名（胶囊）。★ 只取 `general_traits`，不掺兵种特性。
+func _general_trait_names(kind: String) -> Array:
+	var out: Array = []
+	if cfg == null:
+		return out
+	var gidx: int = ConfigRes.general_index_of(kind)
+	if gidx < 0:
+		return out
+	for tid in cfg.general_traits_at(gidx):
+		var nm: String = cfg.general_trait_name(String(tid))
+		if nm != "" and not out.has(nm):
+			out.append(nm)
+	return out
+
+
+## 将领的一句简述（占位写法：兵种 + 一句风味）。
+##   ★ `unit.general.brief`（按将领序号）写了就优先用。
+##   ★ 2026.11.19：特性已经搬到右侧专门的「将领特性」面板，这里**不再罗列特性名**
+##     （否则同一块屏上写两遍）。
+func _general_brief(types: Array, kind: String) -> String:
+	if cfg == null:
+		return ""
+	var gidx: int = ConfigRes.general_index_of(kind)
+	if gidx >= 0:
+		var authored := _config_text("unit.general.brief.%d" % gidx)
+		if authored.strip_edges() != "":
+			return authored
+	var cls := _class_short(String(types[0])) if not types.is_empty() else ""
+	if cls == "":
+		return "身经百战的将领。"
+	return "身经百战的%s将领。" % cls
+
+
+## 建筑操作那一格（升级 / 取消 / 已满级 / 重生中 / 拆除）—— 造价 + 一句结果。
 func _hover_building(entry: Dictionary) -> Dictionary:
 	var b = _primary_building()
 	if b == null and input_ctrl != null and input_ctrl.selected_zone != null:
 		b = _zone_center_building_of(input_ctrl.selected_zone)
 	var title := String(entry.get("name", ""))
 	if b == null:
-		return _hover_card(title, "操作")
+		return _hover_data(title, "操作")
+	var d := {}
 	match String(entry.get("type", "")):
 		"building_upgrade":
-			return _hover_card(title, "升级", _cost_cells(world.building_upgrade_cost(b)),
-				"结果", ["升到%d级" % (b.level + 1)])
+			d = _hover_data(title, "升级", _cost_pairs(world.building_upgrade_cost(b)),
+				["升到%d级" % (b.level + 1)], "")
 		"building_upgrade_cancel":
-			return _hover_card(title, "取消升级", _cost_cells(
+			d = _hover_data(title, "取消升级", _cost_pairs(
 					{"food": b.upgrade_cost_food, "gold": b.upgrade_cost_gold}),
-				"结果", ["全额退还"])
+				["全额退还"], "")
 		"building_respawn":
-			return _hover_card(title, "重生中", [],
-				"结果", ["重生队列 %d 位" % b.respawn_count()])
+			d = _hover_data(title, "重生中", [], ["重生队列 %d 位" % b.respawn_count()], "")
 		"building_upgrade_max":
-			return _hover_card(title, "已满级")
+			return _hover_data(title, "已满级", [], [], "已经升到当前上限。")
 		"building_demolish":
-			return _hover_card(title, "拆除", [], "结果", ["建筑移除"],
+			d = _hover_data(title, "拆除", [], ["建筑移除"],
 				"把卡牌拖到地图上松手；不返还建造资源")
-	return _hover_card(title, "操作")
+		_:
+			return _hover_data(title, "操作")
+	d["caption"] = "结 果"
+	return d
 
 
-## 科技九格 —— **效果胶囊**（`line` 就是 config 里那句短效果，如「远近免伤 +10%」）
-## + ★★ 2026.11.19 补回的**说明段落**（`desc` 那句完整说明）。
-## ★★ 2026.11.18：科技不再持续耗金，悬停不再显示「金/秒」那一格。
-##   已启用 / 不可取消写在 note 里；未启用但不可用的原因也写在 note 里。
-## ★★ 2026.11.19（用户口径）：「科技卡牌悬停的文本丢失了，补一下」——
-##   上一版重排版只留了短效果（`line`），`desc` 那段整段没画，牌面中间空一块。
-##   现在 `desc` 走悬停牌的说明段落（`hover_tip` 的 body，按可用高度折行）。
+## 科技牌 —— 名称 + 一句说明（科技不花资源，所以没有造价那一排）。
+## ★ 说明用 config 里那句 `desc`（如「玩家总体粮食产能 +10%」）；
+##   已启用 / 不可取消写在 note 里。
 func _hover_tech(entry: Dictionary) -> Dictionary:
-	var id := String(entry.get("id", ""))
-	var gps := float(entry.get("gold_per_sec", 0.0))
-	if gps <= 0.0:
-		gps = cfg.tech_gold_per_sec_of(id)
-	var cells: Array = []
-	if gps > 0.0:
-		cells.append({"label": "金/秒", "value": _fmt_num(gps)})
-	var chips: Array = []
-	var line := String(entry.get("line", ""))
-	if line != "":
-		chips.append(line)
-	return _hover_card(String(entry.get("name", "")), "科技",
-		cells, "效果", chips, _tech_lock_note(entry), String(entry.get("desc", "")))
+	var desc := String(entry.get("desc", ""))
+	if desc.strip_edges() == "":
+		desc = String(entry.get("line", ""))
+	return _hover_data(String(entry.get("name", "")), "科技", [], [], desc,
+		_tech_lock_note(entry))
 
 
 ## 这条科技现在**启不了**的一句话原因（能启时返回空串）。
@@ -3293,18 +3458,28 @@ func _on_tech_cell_activated(id: String) -> void:
 	_refresh_hover()
 
 
-## 悬停说明牌还开着时，按**权威状态**重算一次内容。
+## 卡牌悬停面板还开着时，按**权威状态**重算一次内容。
 ##
 ## ★ 只在「点了那一格」这种**状态当场变了**的路径上调（见 `_on_tech_cell_activated`）：
 ##   悬停进来的那一帧已经取过一次，没必要每帧重量一遍。
 func _refresh_hover() -> void:
-	if hover_tip == null or _hover_src == "":
+	if card_hover == null or _hover_src == "":
 		return
-	var d := _hover_detail(_hover_src, _hover_entry(_hover_src, _hover_index))
+	var entry := _hover_entry(_hover_src, _hover_index)
+	var d := _card_hover_content(_hover_src, entry)
 	if d.is_empty():
 		_dismiss_hover()
 		return
-	_show_hover_card(d)
+	_show_card_hover(d, _trait_panel_content(_hover_src, entry), _hover_src, _hover_index)
+
+
+## 按 config 路径取一段**文本**（取不到 / 不是字符串 → 空串）。
+## ★ 悬停面板的 `brief`（简述）字段走这里读 —— 占位阶段允许整段缺失。
+func _config_text(path: String) -> String:
+	if cfg == null:
+		return ""
+	var v: Variant = cfg.get_path_value(path)
+	return v if typeof(v) == TYPE_STRING else ""
 
 
 ## 命令卡 → 动作。★ 这里只调输入层的接口，自己绝不碰逻辑状态。
@@ -4485,7 +4660,7 @@ func _refresh_detail() -> void:
 	_v2_show_troops(troops, current, troop, shown)
 
 
-## 左下角面板「向右滑进来」的**唯一实现** —— 详情牌与悬停说明牌共用。
+## 左下角面板「向右滑进来」的**唯一实现**（详情牌用）。
 ##
 ## ★ 只动 `position:x`：y 由「贴底」锚点管，窗口缩放 / 中途再滑一次都不会被拉走；
 ##   `home_x` 是**建控件时量到的**目标 x（锚点左对齐 ⇒ 与父容器尺寸无关）。
@@ -4505,24 +4680,6 @@ func _play_detail_slide_in() -> void:
 	if _detail_slide_tween != null and _detail_slide_tween.is_running():
 		_detail_slide_tween.kill()
 	_detail_slide_tween = _left_slide_in(detail_v2, _detail_home_position.x)
-
-
-## 悬停说明牌同样从左边滑进来（每次「从无到有」都播，见 `_show_hover_card`）
-func _play_hover_slide_in() -> void:
-	if hover_tip == null:
-		return
-	if _hover_slide_tween != null and _hover_slide_tween.is_running():
-		_hover_slide_tween.kill()
-	_hover_slide_tween = _left_slide_in(hover_tip, _hover_home_position.x)
-
-
-## 收起时把滑到一半的位置**归位**（否则下一次滑入会从半路开始，越滑越靠右）
-func _reset_hover_slide() -> void:
-	if hover_tip == null:
-		return
-	if _hover_slide_tween != null and _hover_slide_tween.is_running():
-		_hover_slide_tween.kill()
-	hover_tip.position.x = _hover_home_position.x
 
 
 func _has_unit_detail_selection() -> bool:

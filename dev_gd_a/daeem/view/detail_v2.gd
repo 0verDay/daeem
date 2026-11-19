@@ -215,8 +215,8 @@ func _draw() -> void:
 ## 左下角栏那张**切角纸牌**（投影 + 两层错位背牌 + 竖向渐变主牌 + 2px 黄铜边 +
 ## 内圈 1px 金线）。
 ##
-## ★★ 悬停说明牌（`view/hover_tip.gd`）画的是**同一张牌** —— 需求要求「面板大小完全
-##   相同样式相同」，所以画法只写这一份，两边都调它。以后改牌面只改这里。
+## ★★ 卡牌悬停面板（`view/card_hover_panel.gd`）画的是**同一张牌** —— 同一套纸牌语言，
+##   所以画法只写这一份，两边都调它。以后改牌面只改这里。
 ## ★ 是 static：`draw_*` 只能在 `CanvasItem` 上画，静态函数不能隐式用 self，
 ##   调用方把自己（`self`）传进来。
 static func draw_plate(ci: CanvasItem, w: float, h: float) -> void:

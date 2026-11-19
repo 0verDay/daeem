@@ -35,8 +35,8 @@ signal cell_drag_moved(id: String, screen_pos: Vector2)
 signal cell_drag_finished(id: String, screen_pos: Vector2, index: int)
 
 ## ★★ 某一格被**鼠标悬停**（进入 / 离开）：带上格子序号。
-##   hud 收到后弹「悬停详情面板」（与命令卡共用同一块，见 view/hover_tip.gd）——
-##   两个控件的九格在屏幕上**逐像素重合**，所以悬停这件事也必须走同一块面板。
+##   hud 收到后弹「卡牌悬停面板」（与命令卡共用同一块，见 view/card_hover_panel.gd）——
+##   两个控件的牌区在屏幕上**逐像素重合**，所以悬停这件事也必须走同一块面板。
 ##   ★ 与命令卡同一条约定：只报序号，内容由 hud 按当前 entries 现取。
 signal cell_hovered(index: int)
 signal cell_unhovered(index: int)
@@ -1147,6 +1147,16 @@ func cell_at(i: int) -> Button:
 	if i < 0 or i >= _cells.size():
 		return null
 	return _cells[i]
+
+
+## 第 i 格在**最终姿势**下的屏幕矩形（与命令卡同一条：见 `command_card.cell_pose_rect`）。
+func cell_pose_rect(i: int, hovered: bool) -> Rect2:
+	var vis := _visible_cell_indices()
+	var ordinal := vis.find(i)
+	if ordinal < 0:
+		return Rect2()
+	return UiLayoutRes.card_pose_rect(ordinal, vis.size(), hovered,
+		get_global_transform_with_canvas())
 
 
 ## 第 i 格显示的名字（空格子为空串）

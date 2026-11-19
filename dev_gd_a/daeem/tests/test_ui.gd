@@ -12,7 +12,7 @@ const PageTabsRes = preload("res://view/page_tabs.gd")
 const RecruitQueueRes = preload("res://view/recruit_queue.gd")
 const TroopGridRes = preload("res://view/troop_grid.gd")
 const IconBadgeRes = preload("res://view/icon_badge.gd")
-const HoverTipRes = preload("res://view/hover_tip.gd")
+const CardHoverPanelRes = preload("res://view/card_hover_panel.gd")
 const ThemeRes = preload("res://view/theme.gd")
 const FontLoaderRes = preload("res://view/font_loader.gd")
 const UnitRes = preload("res://logic/unit.gd")
@@ -138,16 +138,32 @@ func _test_layout_against_reference(cfg) -> void:
 	eq(String(UiLayoutRes.CARD_KEYS[0]), "Q", "第一格是 Q")
 	eq(String(UiLayoutRes.CARD_KEYS[8]), "C", "第九格是 C")
 
-	# ★★ 2026.11.16（用户口径）：「将所有的卡牌悬停文本放至左下角栏中……面板大小完全
-	#   相同样式相同」—— 悬停牌 = 左下详情牌那一块矩形；旧的「贴手牌正上方、按文本
-	#   向上长」那套几何（HOVER_W / hover_rect / HOVER_BOTTOM / HOVER_MIN_H）已删除。
-	eq(UiLayoutRes.HOVER_RECT, UiLayoutRes.DETAIL_V2_RECT,
-		"★★ 悬停牌与左下详情牌是**同一块矩形**（大小 / 位置完全相同）")
-	eq(UiLayoutRes.HOVER_RECT.size, Vector2(377.0, 260.0), "★ 悬停牌 377×260")
-	eq(UiLayoutRes.HOVER_RECT.position, Vector2(27.0, 794.0), "★ 悬停牌落在左下角栏")
-	ok(UiLayoutRes.HOVER_PAD > 0.0, "★ 文字离牌面留了白")
-	ok(UiLayoutRes.HOVER_TITLE_H > 0.0 and UiLayoutRes.HOVER_TITLE_GAP > 0.0,
-		"★ 卡名那一行与精简文本各占一块，不会叠在一起")
+	# ★★ 2026.11.19（用户口径，第二轮）：卡牌悬停面板**固定在牌左侧**、**顶边与卡面对齐**。
+	#   · 主面板宽 300 / 特性面板宽 236，高度都按内容长；
+	#   · 与牌留净距（背牌 / 投影 / 金色菱形都在这段缝里）⇒ 不压被悬停那张牌。
+	eq(UiLayoutRes.CARD_HOVER_PANEL_W, 300.0, "★★ 主面板宽 300")
+	eq(UiLayoutRes.CARD_HOVER_TRAIT_W, 236.0, "★★ 将领特性面板宽 236")
+	ok(UiLayoutRes.CARD_HOVER_PANEL_GAP >= 20.0,
+		"★★ 与牌留净距 %.0f（容纳背牌 + 投影 + 菱形）" % UiLayoutRes.CARD_HOVER_PANEL_GAP)
+	var view := Vector2(1920.0, 1080.0)
+	var card_l := Rect2(600.0, 667.0, 227.0, 330.0)
+	var card_r := Rect2(1200.0, 667.0, 227.0, 330.0)
+	# ★ 左半边 / 右半边的牌都**固定放左侧**（不再按位置换边）。
+	var p_l := UiLayoutRes.card_hover_panel_position(card_l, 150.0, view)
+	var p_r := UiLayoutRes.card_hover_panel_position(card_r, 150.0, view)
+	eq(p_l.x, card_l.position.x - UiLayoutRes.CARD_HOVER_PANEL_GAP
+			- UiLayoutRes.CARD_HOVER_PANEL_W,
+		"★★ 面板右缘离牌 `GAP`（不压原卡）")
+	eq(p_r.x, card_r.position.x - UiLayoutRes.CARD_HOVER_PANEL_GAP
+			- UiLayoutRes.CARD_HOVER_PANEL_W,
+		"★★ 右半边的牌也放左侧（固定左侧）")
+	near(p_l.y, card_l.position.y, 0.01, "★★ 面板顶边 = 卡面顶边（顶对齐）")
+	near(p_r.y, card_r.position.y, 0.01, "★★ 顶对齐与牌的位置无关")
+	# 将领特性面板：牌右侧，同样顶对齐，宽 236
+	var p_t := UiLayoutRes.card_hover_panel_position(card_l, 150.0, view,
+		UiLayoutRes.CARD_HOVER_TRAIT_W, 1)
+	eq(p_t.x, card_l.end.x + UiLayoutRes.CARD_HOVER_PANEL_GAP, "★★ 特性面板在牌右侧")
+	near(p_t.y, card_l.position.y, 0.01, "★★ 特性面板同样顶对齐")
 
 	eq(UiLayoutRes.TABS_RECT, Rect2(1710.0, 884.0, 184.0, 184.0),
 		"V2 右下圆盘页签外接正方形")
@@ -611,7 +627,8 @@ func _test_panels(cfg) -> void:
 	await _test_page_tabs_and_card(main, cfg)
 	await _test_tab_auto_jump_and_lift(main)
 	await _test_hover_panel(main, cfg)
-	await _test_hover_tip_control(cfg)
+	await _test_card_hover_delay(main)
+	await _test_card_hover_panel_control(cfg)
 	await _test_panel_slide_in(main)
 	_test_card_keys(main)
 	_test_tech_keys(main)
@@ -2535,269 +2552,223 @@ func _test_hover_panel(main, cfg) -> void:
 	var hud = main.hud
 	var card = hud.command_card
 	var tabs = hud.page_tabs
-	var tip = hud.hover_tip
+	var panel = hud.card_hover
 	var world = main.world
 	give_gold_income(world, 100.0)
+	# ★ 这一节验的是**内容与位置**，不是出现时机：关掉动效 ⇒ 悬停当场就弹
+	#   （时机 / 拖牌消失那两条在 `_test_card_hover_delay` 里单独验）。
+	var anim_was: bool = ThemeRes.animations_enabled()
+	ThemeRes.set_animations_enabled(false)
 
-	ok(tip != null, "★ HUD 里有悬停说明牌")
-	if tip == null:
+	ok(panel != null, "★ HUD 里有卡牌悬停面板")
+	if panel == null:
+		ThemeRes.set_animations_enabled(anim_was)
 		return
-	ok(hud.get_node_or_null("HudRoot/HoverTip") != null, "节点树里有 HudRoot/HoverTip")
-	eq(tip.mouse_filter, Control.MOUSE_FILTER_IGNORE, "★ 悬停说明牌不吃鼠标（否则挡住地图点击）")
-	ok(not tip.showing(), "开局没有悬停 → 面板收着")
-	# ★★ 2026.11.16（用户口径）：「将所有卡牌悬停文本放至左下角栏……面板大小完全相同
-	#   样式相同」—— 悬停牌就是左下角栏那一块（377×260），并压在详情牌之上。
-	#   ⚠️ 这里读 offset（apply_rect 的结果）而不是 size：size 要等一次布局，
-	#     而 offset 是建控件时就定死的，不会因为测试窗口大小而漂。
-	eq(tip.offset_right - tip.offset_left, UiLayoutRes.HOVER_RECT.size.x,
-		"★★ 悬停牌宽度 = 左下角栏 377")
-	eq(tip.offset_bottom - tip.offset_top, UiLayoutRes.HOVER_RECT.size.y,
-		"★★ 悬停牌高度 = 左下角栏 260（高度不再随文本变）")
-	var detail_v2 = hud.detail_v2
-	ok(detail_v2 != null, "（前提）有左下详情牌")
-	if detail_v2 != null:
-		eq(tip.offset_right - tip.offset_left, detail_v2.offset_right - detail_v2.offset_left,
-			"★★ 与详情牌**同宽**")
-		eq(tip.offset_bottom - tip.offset_top, detail_v2.offset_bottom - detail_v2.offset_top,
-			"★★ 与详情牌**同高**")
-		ok(tip.z_index > detail_v2.z_index,
-			"★★ 悬停牌压在详情牌之上（z %d > %d）⇒ 悬停时覆盖原栏位"
-				% [tip.z_index, detail_v2.z_index])
+	ok(hud.get_node_or_null("HudRoot/CardHoverPanel") != null,
+		"节点树里有 HudRoot/CardHoverPanel")
+	eq(panel.mouse_filter, Control.MOUSE_FILTER_IGNORE,
+		"★★ 悬停面板不吃鼠标（盖住别的牌也不挡它们的悬停）")
+	eq(panel.z_index, 30, "★ z=30，压过手牌（牌自身最高 22）")
+	ok(not panel.showing(), "开局没有悬停 → 面板收着")
+	eq(panel.size.x, UiLayoutRes.CARD_HOVER_PANEL_W, "★ 宽度固定 300")
 
+	# ---------------- 建筑页 ----------------
 	main.input_ctrl.select_units([])
 	hud.refresh()
 	tabs.select_page(PageTabsRes.PAGE_BUILD)
-	# ★ 2026.11.19：Q 格是大本营牌，哨塔在 W 格（下标 1）。
+	var card_base = world.find_base_of("p1")
+	if card_base != null:
+		card_base.build_total = 0.0
+		card_base.build_remaining = 0.0
+	world.resources["food"] = 10000.0
+	world.resources["gold"] = 10000.0
+	hud._rebuild_card()
+	hud.refresh()
 	card.hover(1)
-	ok(tip.showing(), "★ 鼠标停在命令卡某一格上 → 左下角栏换成悬停说明")
-	eq(tip.title_text(), "哨塔", "左上角那一行是这一格的名字")
-	# ★★ 2026.11.16 第二轮（用户口径）：「排版改成像选中建筑/单位时那种**有分隔的**排版」
-	#   ⇒ 副标题（卡种/兵种）+ 造价格 + 特性小标题 + 胶囊，各有各的块。
-	eq(tip.subtitle_text(), "建筑", "★ 副标题写卡种（建筑）")
-	eq(tip.cell_count(), 1, "★ 造价那一排格子（哨塔只花粮食 ⇒ 1 格）")
-	eq(tip.cell_label(0), "粮食", "★ 格子标签（与详情牌的「编制 / 血量」同款）")
-	eq(tip.cell_value(0), "100", "★ 格子数值")
-	eq(tip.caption_text(), "特性", "★ 小标题（特性）")
-	eq(tip.chips(), ["远程免伤+"], "★★ 特性胶囊（实际：%s）" % str(tip.chips()))
-	eq(tip.paragraph_text(), "", "★ 建筑悬停没有说明段落（版式与以前一致）")
-	var bt: String = tip.body_text()
-	for gone in ["血量", "攻击", "占格", "地块"]:
-		ok(not bt.contains(gone), "★ 不再写「%s」（实际：%s）" % [gone, bt])
-
+	ok(panel.showing(), "★ 鼠标停在建筑牌上 → 面板浮出来")
+	ok(not hud.general_trait_panel.showing(), "★ 非将领卡不弹右侧特性面板")
+	eq(panel.title_text(), "哨塔", "卡名")
+	eq(panel.tag_text(), "建筑", "★ 类别标签（建筑）")
+	var bcost: Array = panel.cost()
+	eq(bcost.size(), 1, "★ 造价一档（哨塔只花粮食）")
+	eq(String(bcost[0].get("label", "")), "粮食", "★ 造价标签")
+	eq(String(bcost[0].get("value", "")), "100", "★ 造价数值")
+	eq(panel.traits(), [], "★ 建筑没有特性胶囊")
+	eq(panel.paragraph_text(), String(cfg.get_path_value("building.tower.brief")),
+		"★★ 说明取 building.<type>.brief（占位文本）")
+	eq(panel.note_text(), "", "★ 能造的时候不写原因")
+	# ★★ 位置：**固定左侧 + 顶对齐**，且**不压被悬停那张牌**（含背牌 / 投影 / 菱形）
+	var card_rect: Rect2 = card.cell_pose_rect(1, true)
+	var prect := Rect2(panel.position, panel.size)
+	eq(panel.side(), -1, "★★ 主面板固定在牌的左侧")
+	ok(prect.end.x <= card_rect.position.x - UiLayoutRes.CARD_HOVER_PANEL_GAP + 0.01,
+		"★★ 面板在左侧且不压原卡（面板右缘 %.1f / 牌左缘 %.1f）"
+			% [prect.end.x, card_rect.position.x])
+	ok(not panel.occupied_rect().intersects(card_rect),
+		"★★ 连背牌 / 投影 / 菱形都不压原卡")
+	near(prect.position.y, card_rect.position.y, 0.01,
+		"★★ 面板顶边与卡面顶边对齐（顶对齐）")
+	# 高度按内容长：建筑只有一行显示，比单位矮
+	ok(panel.size.y > 80.0 and panel.size.y < 200.0,
+		"★ 高度按内容长（建筑 %.1f）" % panel.size.y)
 	card.unhover(1)
-	ok(not tip.showing(), "鼠标移开 → 说明收起来，露出原来的详情栏")
-	card.hover(6)
-	ok(not tip.showing(), "★ 空格子上不弹面板（没内容就不弹一块空的）")
+	ok(not panel.showing(), "鼠标移开 → 面板收起来")
 
+	# 空格子不弹（不弹一块空的）
+	var empty_i := -1
+	for i in UiLayoutRes.CARD_SLOTS:
+		if card.entry_at(i).is_empty():
+			empty_i = i
+			break
+	if empty_i >= 0:
+		card.hover(empty_i)
+		ok(not panel.showing(), "★ 空格子上不弹面板")
+		card.unhover(empty_i)
+
+	# 迟到的旧 exit 不许把新面板收掉
 	card.hover(1)
-	card.hover(2)          # 新的一格先到（粮田）
-	card.unhover(1)        # 迟到的旧 exit
-	ok(tip.showing() and tip.title_text() == "粮田",
-		"★ 迟到的 mouse_exited 不会把新面板收掉（实际：%s）" % tip.title_text())
+	card.hover(2)
+	card.unhover(1)
+	ok(panel.showing() and panel.title_text() == card.cell_label(2),
+		"★ 迟到的 mouse_exited 不会把新面板收掉（实际：%s）" % panel.title_text())
 	card.unhover(2)
-	ok(not tip.showing(), "（收尾）面板收起来")
+	ok(not panel.showing(), "（收尾）面板收起来")
 
+	# ---------------- 科技页 ----------------
 	main.input_ctrl.select_units([])
 	hud.refresh()
 	tabs.select_page(PageTabsRes.PAGE_TECH)
 	ok(hud.tech_grid.visible, "（前提）切到科技页")
 	var g = hud.tech_grid
-	# ★★ 2026.11.16：科技页悬停展开必须有缓动（原来是一帧瞬移）。
-	var anim_was_tech: bool = ThemeRes.animations_enabled()
-	ThemeRes.set_animations_enabled(true)
-	g._raise_card(0, true)
-	var eased := false
-	for tw in g._hover_tweens:
-		if tw != null and is_instance_valid(tw) and (tw as Tween).is_running():
-			eased = true
-	ok(eased, "★★ 科技页悬停展开有缓动（不再是瞬移）")
-	g._layout_fan()
-	ThemeRes.set_animations_enabled(anim_was_tech)
 	g.hover(0)
-	ok(tip.showing(), "★ 科技九格也出悬停说明（与命令卡共用同一块牌）")
-	eq(tip.title_text(), "粮食产量 I", "左上角是科技名")
-	eq(tip.subtitle_text(), "科技", "★ 副标题写卡种（科技）")
-	eq(tip.cell_count(), 0, "★★ 科技不再持续耗金：悬停没有「金/秒」那一格")
-	eq(tip.caption_text(), "效果", "★ 小标题（效果）")
-	eq(tip.chips(), ["粮食产能 +10%"], "★★ 效果胶囊（实际：%s）" % str(tip.chips()))
-	# ★★ 2026.11.19（用户口径）：「科技卡牌悬停的文本丢失了，补一下」——
-	#   上一版重排版把 `desc` 那一整段丢了，只剩短效果。现在它走说明段落（body）。
-	eq(tip.paragraph_text(), "玩家总体粮食产能 +10%",
-		"★★ 科技悬停补回说明段落（desc）")
-	for gone in ["未启用", "名额", "阶"]:
-		ok(not tip.body_text().contains(gone),
-			"★ 状态那些字不再进悬停（实际：%s）" % tip.body_text())
+	ok(panel.showing(), "★ 科技牌也出悬停面板（与命令卡共用同一块）")
+	eq(panel.title_text(), "粮食产量 I", "科技名")
+	eq(panel.tag_text(), "科技", "★ 类别标签（科技）")
+	eq(panel.cost().size(), 0, "★★ 科技不花资源 ⇒ 没有造价那一排")
+	eq(panel.traits(), [], "★ 科技没有特性胶囊")
+	eq(panel.paragraph_text(), "玩家总体粮食产能 +10%",
+		"★★ 科技说明就是 config 里那句 desc")
+	eq(panel.note_text(), "", "★ 正常可用时不写原因")
 	var first_id := String((g.entry_at(0) as Dictionary).get("id", ""))
 	g.press(0)
 	ok(world.is_tech_active(first_id), "（前提）点一格 = 立刻启用")
 	hud.refresh()
-	ok(tip.showing() and tip.title_text() == "粮食产量 I", "（前提）点完之后还是同一格")
-	eq(tip.chips(), ["粮食产能 +10%"],
-		"★ 启用与否不改内容（状态在格子上，不重复写）")
-	ok(tip.body_text().contains("已启用（不可取消）"),
+	ok(panel.showing() and panel.title_text() == "粮食产量 I", "（前提）点完之后还是同一格")
+	ok(panel.note_text().contains("已启用（不可取消）"),
 		"★ 已启用科技的悬停写明不可取消")
-	# 收尾：内部回滚，别把加成留给后面的用例（UI 已经没有弃用入口）。
+	# 收尾：内部回滚，别把加成留给后面的用例
 	world.tech.deactivate(first_id)
 	world._apply_tech_effects()
 	hud.refresh()
 	eq(world.active_tech_ids().size(), 0, "（收尾）科技全部清空")
 
-	ok(tip.showing(), "（前提）切页之前说明还开着")
+	ok(panel.showing(), "（前提）切页之前面板还开着")
 	tabs.select_page(PageTabsRes.PAGE_BUILD)
-	ok(not tip.showing(), "★ 换页时悬停说明收起来")
+	ok(not panel.showing(), "★ 换页时悬停面板收起来")
 
-	# ★★ 2026.11.17（用户口径）：科技牌与手牌**同一套** —— 拖出某一张时其余格往下沉 + 缩小，
-	#   松手（哪怕只是取消）再反向浮回。与命令卡共用 `UiLayoutRes.CARD_TUCK_*` 那几个数。
-	#   ★ 放在「换页收起悬停」那条之后：这一节会真的拖一下牌，别去搅前面那条悬停用例。
-	var g_vis: Array[int] = []
-	for ci in g._cells.size():
-		if g._cells[ci].visible:
-			g_vis.append(ci)
-	ok(g_vis.size() >= 2, "（前提）科技页至少两张可见格（%d）" % g_vis.size())
-	if g_vis.size() >= 2:
-		var pick := -1
-		for ci2 in g_vis:
-			var ei2: int = g._entry_index_for_cell(ci2)
-			if ei2 >= 0 and ei2 < g._entries.size() \
-					and bool((g._entries[ei2] as Dictionary).get("available", true)):
-				pick = ci2
-				break
-		var other := -1
-		for ci3 in g_vis:
-			if ci3 != pick:
-				other = ci3
-				break
-		if pick >= 0 and other >= 0:
-			g._layout_fan()
-			var other_base: Vector2 = g._cells[other].position
-			g._drag_index = pick
-			g._drag_start_pos = Vector2(500.0, 900.0)
-			g._update_drag(pick, Vector2(500.0, 860.0))        # 上拖 40px ⇒ 进入拖拽
-			ok(g._dragging, "（前提）科技牌已经拖起来")
-			for _i in 20:
-				await process_frame
-			near(g._cells[other].scale.x, UiLayoutRes.CARD_TUCK_SCALE, 0.01,
-				"★★ 拖出科技牌 → 其余格缩到 0.82 倍")
-			# ★ 支点 = 牌底中点（2026.11.18），「牌心」要用 `card_visual_center` 算。
-			var oc: Vector2 = UiLayoutRes.card_visual_center(g._cells[other].position,
-				g._cells[other].size, g._cells[other].scale.x)
-			var ob: Vector2 = UiLayoutRes.card_visual_center(other_base,
-				g._cells[other].size, 1.0)
-			near(oc.y, ob.y + UiLayoutRes.CARD_TUCK_PX, 2.0,
-				"★★ 而且整体往下沉 40px（格心：%.1f → %.1f）" % [ob.y, oc.y])
-			near(oc.x, ob.x, 2.0, "★★ 下沉时不左右挪（支点在牌底中点）")
-			# 松手在 UI 上 = 取消（不启用 / 不弃用）；其余格反向浮回。
-			g._finish_touch_drag(pick, UiLayoutRes.CARD_RECT.position + Vector2(30.0, 30.0))
-			for _i in 20:
-				await process_frame
-			near(g._cells[other].scale.x, 1.0, 0.01, "★★ 松手后其余格浮回原尺寸")
-			v2_near(g._cells[other].position, other_base, 1.5,
-				"★★ 而且完全回到原位（取消也要反向播完）")
-
+	# ---------------- 单位页 ----------------
 	main.input_ctrl.select_units([world.unit_by_id("general-1")])
 	hud.refresh()
 	tabs.select_page(PageTabsRes.PAGE_UNIT)
-	# ★★ 2026.11.19：换选中现在会播整手牌入场；这里验的是悬停几何，
-	#   先把入场收尾到最终摆位，避免拿动效中途位置当基准。
 	if card._deck_tween != null and card._deck_tween.is_running():
 		card._deck_tween.kill()
 	card._layout_fan()
 	eq(card.cell_label(0), "长枪兵", "（前提）单位页 Q 格 = 长枪兵")
-	# ★★ 2026.11.16（用户口径）：「鼠标悬停在某一张牌上时，其余牌向左右散开以避免遮挡」。
-	var vis: Array[int] = []
-	for ci in card._cells.size():
-		if card._cells[ci].visible:
-			vis.append(ci)
-	ok(vis.size() >= 2, "（前提）单位页至少两张可见牌（%d）" % vis.size())
-	if vis.size() >= 2:
-		var before: Dictionary = {}
-		for ci in vis:
-			before[ci] = card._cells[ci].position
-		# 关掉缓动：这条断言验的是「目标位置」，不是「Tween 播到哪一帧」。
-		var anim_was: bool = ThemeRes.animations_enabled()
-		ThemeRes.set_animations_enabled(false)
-		# 悬停最左那张：其余牌全部向右让开。
-		card._raise_card(vis[0], true)
-		var all_right := true
-		for k in range(1, vis.size()):
-			if card._cells[vis[k]].position.x <= float(before[vis[k]].x) + 1.0:
-				all_right = false
-		ok(all_right, "★★ 悬停最左牌：其余牌都向右让开")
-		ok(card._cells[vis[0]].position.y < float(before[vis[0]].y) - 5.0,
-			"★★ 被悬停的牌自己抬起")
-		ok(card._cells[vis[0]].scale.x > 1.0,
-			"★★ 被悬停的牌放大（%.3f 倍）" % card._cells[vis[0]].scale.x)
-		for k in range(1, vis.size()):
-			near(card._cells[vis[k]].scale.x, 1.0, 0.001, "★★ 未悬停的牌不放大")
-		card._raise_card(vis[0], false)
-		near(card._cells[vis[0]].scale.x, 1.0, 0.001, "★★ 收手后恢复原尺寸")
-		# 悬停最右那张：其余牌全部向左让开。
-		var last_i: int = vis[vis.size() - 1]
-		card._raise_card(last_i, true)
-		var all_left := true
-		for k in range(0, vis.size() - 1):
-			if card._cells[vis[k]].position.x >= float(before[vis[k]].x) - 1.0:
-				all_left = false
-		ok(all_left, "★★ 悬停最右牌：其余牌都向左让开")
-		card._raise_card(last_i, false)
-		for ci in vis:
-			near(card._cells[ci].position.x, float(before[ci].x), 0.5, "★★ 收手后牌回到原位")
-		# ★★ 2026.11.16：同侧整体平移 ⇒ 悬停第 3 张换到第 4 张时，
-		#   左侧更远的第 1 / 2 张位置不变（用户举的反例）。
-		if vis.size() >= 4:
-			card._raise_card(vis[2], true)
-			var p0: Vector2 = card._cells[vis[0]].position
-			var p1: Vector2 = card._cells[vis[1]].position
-			card._raise_card(vis[3], true)
-			near(card._cells[vis[0]].position.x, p0.x, 0.5, "★★ 3→4：第 1 张原地不动")
-			near(card._cells[vis[1]].position.x, p1.x, 0.5, "★★ 3→4：第 2 张原地不动")
-			near(card._cells[vis[2]].position.x,
-				float(before[vis[2]].x) - UiLayoutRes.CARD_HOVER_PUSH_PX, 1.0,
-				"★★ 3→4：原来被悬停的第 3 张让到左侧")
-			card._raise_card(vis[3], false)
-		ThemeRes.set_animations_enabled(anim_was)
 	card.hover(0)
-	ok(tip.showing() and tip.title_text() == "长枪兵", "★ 单位页那一格有悬停说明")
-	eq(tip.subtitle_text(), "近战步兵", "★★ 副标题 = 兵种（近战步兵）")
-	eq(tip.cell_count(), 1, "★ 只花粮食 ⇒ 造价一排 1 格")
-	eq(tip.cell_label(0), "粮食", "★ 粮食那一格")
-	eq(tip.cell_value(0), "80", "★ 长枪兵 80 粮")
-	eq(tip.caption_text(), "特性", "★ 小标题（特性）")
-	eq(tip.chips(), ["对骑兵伤害+"], "★★ 特性胶囊（实际：%s）" % str(tip.chips()))
-	var rt: String = tip.body_text()
-	for gone in ["血量", "攻击", "射程", "速度", "造价", "人口", "读条", "阶数"]:
-		ok(not rt.contains(gone), "★ 不再写「%s」（实际：%s）" % [gone, rt])
+	ok(panel.showing() and panel.title_text() == "长枪兵", "★ 单位牌有悬停面板")
+	ok(not hud.general_trait_panel.showing(), "★ 单位卡不弹右侧特性面板")
+	eq(panel.tag_text(), "近战·步兵", "★★ 标签 = 近战·步兵（用户给的格式）")
+	var ucost: Array = panel.cost()
+	eq(ucost.size(), 1, "★ 长枪兵只花粮食 ⇒ 造价一档")
+	eq(String(ucost[0].get("value", "")), "80", "★ 长枪兵 80 粮")
+	eq(panel.traits(), [], "★ 单位不另列特性胶囊（折进简述）")
+	var ubrief: String = panel.paragraph_text()
+	ok(ubrief.contains("近战步兵"), "★★ 占位简述先写兵种（实际：%s）" % ubrief)
+	ok(ubrief.contains("对骑兵造成额外伤害"),
+		"★★ 占位简述把特性写成一句（实际：%s）" % ubrief)
+	ok(not ubrief.contains("血量") and not ubrief.contains("攻击"),
+		"★ 简述里不铺数值（实际：%s）" % ubrief)
 	card.unhover(0)
+	ok(not panel.showing(), "（收尾）单位牌面板收起")
 
+	# ★★ 每一张可见牌：面板都不压原卡、也不出屏（左右两端最容易出问题）
+	var vp: Vector2 = hud.view_size()
+	var checked := 0
+	for vi in card._visible_entry_indices():
+		card.hover(int(vi))
+		if not panel.showing():
+			continue
+		var cr: Rect2 = card.cell_pose_rect(int(vi), true)
+		ok(not panel.occupied_rect().intersects(cr),
+			"★★ 面板不压原卡（第 %d 格：面板 %s / 牌 %s）"
+				% [vi, panel.occupied_rect(), cr])
+		var pr := Rect2(panel.position, panel.size)
+		ok(pr.position.x >= 0.0 and pr.end.x <= vp.x
+				and pr.position.y >= 0.0 and pr.end.y <= vp.y,
+			"★★ 面板不出屏（第 %d 格：%s）" % [vi, pr])
+		card.unhover(int(vi))
+		checked += 1
+	ok(checked >= 2, "（前提）至少验证了两张牌（%d）" % checked)
+
+	# 作者写了 brief 的单位：直接用原文（乂字军披甲剑士 = 用户给的示例）
+	eq(String(cfg.get_path_value("unit.types.dg_swordsman.brief")),
+		"信念坚定的战士，对骑兵造成额外伤害，对近战减伤",
+		"★★ 单位简述字段 brief 存在（示例文案）")
+
+	# ---------------- 将领页 ----------------
 	var zone = _zone_with_center(world)
 	ok(zone != null, "（前提）地图上找得到一个带中心的区划")
 	if zone != null:
 		main.input_ctrl.select_zone(zone)
 		hud.refresh()
-		# ★ 2026.11.19：区划中心没有专属招募页；招募将领走主页签「将领」的拖拽牌。
 		tabs.select_page(PageTabsRes.PAGE_GENERAL)
 		var gidx := -1
 		for gi in card.entries().size():
-			if String(card.entry_at(gi).get("type", "")) == "general_drag":
+			var e: Dictionary = card.entry_at(gi)
+			if String(e.get("type", "")) in ["general_drag", "zone_recruit"] \
+					and not hud._general_trait_names(String(e.get("unit_kind", ""))).is_empty():
 				gidx = gi
 				break
-		ok(gidx >= 0, "（前提）将领页有可拖的将领牌")
+		ok(gidx >= 0, "（前提）将领页有带特性的将领牌")
 		if gidx >= 0:
 			var hover_label: String = card.cell_label(gidx)
+			var gcard: Rect2 = card.cell_pose_rect(gidx, true)
 			card.hover(gidx)
-			ok(tip.showing() and tip.title_text() == hover_label,
-				"★ 将领页那一格也有悬停说明")
-			var zt: String = tip.subtitle_text()
-			ok(zt.contains("步兵") or zt.contains("骑兵") or zt.contains("器械"),
-				"★ 副标题写兵种（实际：%s）" % zt)
-			ok(tip.cell_count() >= 1, "★ 将领也有造价格（%d 格）" % tip.cell_count())
-			var all: String = tip.body_text()
-			for gone in ["读条", "人口", "冷却", "区划"]:
-				ok(not all.contains(gone), "★ 不再写「%s」（实际：%s）" % [gone, all])
+			ok(panel.showing() and panel.title_text() == hover_label,
+				"★ 将领牌有悬停面板")
+			eq(panel.tag_text(), "将领", "★ 类别标签（将领）")
+			ok(panel.cost().size() >= 1, "★ 将领有造价（%d 档）" % panel.cost().size())
+			eq(panel.traits(), [], "★★ 主面板不再挤特性胶囊（挪到右侧那块）")
+			var gdesc: String = panel.paragraph_text()
+			ok(gdesc.contains("将领"), "★★ 将领也有简述（实际：%s）" % gdesc)
+			# ★★ 2026.11.19（用户口径）：将领卡**右侧多一块**特性面板。
+			var tp = hud.general_trait_panel
+			ok(tp != null, "★★ HUD 里有将领特性面板")
+			if tp != null:
+				ok(tp.showing(), "★★ 将领卡悬停 → 右侧特性面板也出现")
+				ok(tp.row_count() >= 1, "★★ 特性面板列出特性（%d 条）" % tp.row_count())
+				ok(tp.row_name(0) != "" and tp.row_desc(0) != "",
+					"★★ 每条特性 = 名字 + 说明（%s / %s）"
+						% [tp.row_name(0), tp.row_desc(0)])
+				ok(tp.position.x >= gcard.end.x + UiLayoutRes.CARD_HOVER_PANEL_GAP - 0.01,
+					"★★ 特性面板在牌右侧（x=%.1f / 牌右缘 %.1f）"
+						% [tp.position.x, gcard.end.x])
+				near(tp.position.y, gcard.position.y, 0.01, "★★ 特性面板顶对齐")
+				ok(not tp.occupied_rect().intersects(gcard),
+					"★★ 特性面板（含装饰）也不压原卡")
+				eq(tp.size.x, UiLayoutRes.CARD_HOVER_TRAIT_W, "★ 特性面板宽 236")
+			# 主面板：固定左侧 + 顶对齐
+			ok(panel.position.x + panel.size.x
+					<= gcard.position.x - UiLayoutRes.CARD_HOVER_PANEL_GAP + 0.01,
+				"★★ 主面板固定在牌左侧")
+			near(panel.position.y, gcard.position.y, 0.01, "★★ 主面板顶对齐")
 			card.unhover(gidx)
-
+			ok(not panel.showing(), "（收尾）将领牌面板收起")
+			if tp != null:
+				ok(not tp.showing(), "（收尾）特性面板也收起")
 		eq(tabs.page_count(), 5, "★ 区划中心显示主页签 + X")
 
+	# ---------------- 兜底：大本营升级牌 ----------------
 	var base = world.find_base_of("p1")
 	ok(base != null, "（前提）有己方大本营")
 	if base != null:
@@ -2807,69 +2778,143 @@ func _test_hover_panel(main, cfg) -> void:
 		eq(String(card.entry_at(0).get("type", "")), "base_upgrade",
 			"（前提）建筑页 Q 格是大本营升级牌")
 		card.hover(0)
-		ok(tip.showing() and tip.title_text() == "大本营", "★ 大本营牌有悬停说明")
-		eq(tip.subtitle_text(), "升级", "★ 副标题写操作（升级）")
-		ok(tip.cell_count() >= 1, "★ 升级也有造价格（%d 格）" % tip.cell_count())
-		eq(tip.chips(), ["升到2级"], "★★ 结果胶囊 = 升到 N 级（实际：%s）" % str(tip.chips()))
-		var ut: String = tip.body_text()
-		ok(not ut.contains("血量"), "★ 不再写血量（实际：%s）" % ut)
+		ok(panel.showing() and panel.title_text() == "大本营", "★ 大本营牌也有面板")
+		eq(panel.tag_text(), "升级", "★ 类别标签写操作（升级）")
+		ok(panel.cost().size() >= 1, "★ 升级有造价")
+		ok(panel.traits().size() >= 1, "★ 结果胶囊（升到 N 级）")
+		eq(panel.caption_text(), "结 果", "★ 胶囊小标题 = 结果（不是特性）")
+		ok(panel.paragraph_text().contains("大本营"),
+			"★ 简述说明这张牌怎么用（实际：%s）" % panel.paragraph_text())
 		card.unhover(0)
+		ok(not panel.showing(), "（收尾）大本营面板收起")
 
-	main.input_ctrl.select_units([world.unit_by_id("general-1")])
+	ThemeRes.set_animations_enabled(anim_was)
+
+
+## ★★ 2026.11.19（用户口径）：「面板应当在卡牌放大并移动稳定后再出现，出现需要有动效；
+##   卡牌拖出时悬停面板应该消失」。
+func _test_card_hover_delay(main) -> void:
+	var hud = main.hud
+	var panel = hud.card_hover
+	var card = hud.command_card
+	var anim_was: bool = ThemeRes.animations_enabled()
+	ThemeRes.set_animations_enabled(true)
+	main.input_ctrl.select_units([main.world.unit_by_id("general-1")])
 	hud.refresh()
-	eq(tabs.page(), PageTabsRes.PAGE_UNIT, "（前提）选中部队停在单位页")
-	eq(String(card.entry_at(0).get("type", "")), "recruit",
-		"（前提）单位页第一格是招募")
-	card.hover(0)
-	ok(tip.showing(), "★ 单位页的招募格有悬停说明")
-	card.unhover(0)
+	hud.page_tabs.select_page(PageTabsRes.PAGE_UNIT)
+	await process_frame
+	var vis: Array = card._visible_entry_indices()
+	ok(not vis.is_empty(), "（前提）单位页有牌")
+	if vis.is_empty():
+		ThemeRes.set_animations_enabled(anim_was)
+		return
+	var i := int(vis[0])
+	var card_rect_now: Rect2 = card.cell_pose_rect(i, true)
+	card.hover(i)
+	ok(not panel.showing(), "★★ 牌还在放大 / 移动 → 面板**先不出现**")
+	await create_timer(0.12).timeout
+	ok(not panel.showing(), "★★ 0.12s（牌没站稳）仍然不出现")
+	await create_timer(0.10).timeout
+	ok(panel.showing(), "★★ 等牌站稳之后才出现")
+	ok(not panel.occupied_rect().intersects(card_rect_now),
+		"★★ 出现动画（滑入 / 淡入）期间也不压原卡")
+	await create_timer(0.20).timeout
+	near(panel.modulate.a, 1.0, 0.03, "★★ 出现带淡入（最终不透明）")
 
-func _test_hover_tip_control(cfg) -> void:
+	# 拖出：面板立刻消失（牌的 center 起手向上过 10px 阈值 = 进入拖拽）
+	var c: Control = card._cells[i]
+	var origin: Vector2 = c.get_global_transform_with_canvas() * (c.size * 0.5)
+	card._drag_index = i
+	card._drag_start_global = origin
+	card._update_drag_position(i, origin - Vector2(0.0, 30.0))
+	ok(not panel.showing(), "★★ 卡牌拖出 → 悬停面板立刻消失")
+	ok(not panel.visible, "（同上）面板节点也隐藏")
+	card.finish_touch_drag(i, origin)
+	await create_timer(0.25).timeout
+	card.unhover(i)
+	ThemeRes.set_animations_enabled(anim_was)
+
+
+func _test_card_hover_panel_control(cfg) -> void:
 	var font: Font = FontLoaderRes.load_font(cfg)
 	ok(font != null, "（前提）拿得到中文字体")
-	var tip = HoverTipRes.new()
-	root.add_child(tip)
-	tip.setup(font)
+	# 这一节验版式与位置：关掉动效，`position` 就是最终位置。
+	var anim_was: bool = ThemeRes.animations_enabled()
+	ThemeRes.set_animations_enabled(false)
+	var panel = CardHoverPanelRes.new()
+	root.add_child(panel)
+	panel.setup(font)
 	await process_frame
 
-	eq(tip.mouse_filter, Control.MOUSE_FILTER_IGNORE, "★ 悬停说明牌不吃鼠标")
-	ok(not tip.showing() and not tip.visible, "刚建出来时不显示")
-	# ★★ 2026.11.16：尺寸 = 左下角栏（ui_layout.HOVER_RECT），**与内容多少无关**
-	eq(tip.size, UiLayoutRes.HOVER_RECT.size, "★★ 面板尺寸 = 左下角栏 377×260")
-	ok(tip.z_index > 5, "★ z 压在详情牌（z 5）之上")
-	ok(tip.clip_contents, "★ 裁到牌面以内（内容再多也不会画到牌外）")
+	eq(panel.mouse_filter, Control.MOUSE_FILTER_IGNORE,
+		"★★ 悬停面板不吃鼠标（否则盖住谁就抢谁的悬停）")
+	ok(not panel.showing() and not panel.visible, "刚建出来时不显示")
+	eq(panel.size.x, UiLayoutRes.CARD_HOVER_PANEL_W, "★ 宽度固定 300（高度按内容）")
+	eq(panel.z_index, 30, "★ z=30，压过手牌")
+	ok(not panel.clip_contents, "★ 不裁剪（指向卡牌的小菱形画在牌面外）")
 
-	# 版式：卡名 / 副标题 / 造价格 / 小标题 / 胶囊，各是各的块（与详情牌同一套分隔语言）
-	tip.show_card("乂字军披甲剑士", "近战步兵",
-		[{"label": "粮食", "value": "70"}, {"label": "黄金", "value": "0"}],
-		"特性", ["对骑兵伤害+", "近战伤害减免+"], "需2级大本营")
-	ok(tip.showing() and tip.visible, "喂了内容就显示出来")
-	eq(tip.title_text(), "乂字军披甲剑士", "① 卡名")
-	eq(tip.subtitle_text(), "近战步兵", "② 副标题（兵种）")
-	eq(tip.cell_count(), 2, "③ 造价两格")
-	eq(tip.cell_label(0), "粮食", "③ 第一格标签")
-	eq(tip.cell_value(0), "70", "③ 第一格数值")
-	eq(tip.cell_value(1), "0", "③ 第二格数值")
-	eq(tip.caption_text(), "特性", "④ 小标题")
-	eq(tip.chips(), ["对骑兵伤害+", "近战伤害减免+"], "④ 特性胶囊")
-	eq(tip.note_text(), "需2级大本营", "⑤ 置灰原因（贴牌底）")
-	eq(tip.size, UiLayoutRes.HOVER_RECT.size, "★ 显示之后尺寸**一点没变**（不随内容长高）")
+	# 版式：卡名 / 类别胶囊 / 造价 / 特性胶囊 / 简述 / 置灰原因
+	var card_rect := Rect2(600.0, 660.0, 227.0, 330.0)
+	panel.show_card({
+		"name": "乂字军披甲剑士", "tag": "近战·步兵",
+		"cost": [{"label": "粮食", "value": "70"}, {"label": "黄金", "value": "0"}],
+		"traits": ["对骑兵伤害", "近战伤害减免"],
+		"desc": "信念坚定的战士，对骑兵造成额外伤害，对近战减伤。",
+		"note": "需2级大本营",
+	}, card_rect, Vector2(1920.0, 1080.0))
+	ok(panel.showing() and panel.visible, "喂了内容就显示出来")
+	eq(panel.title_text(), "乂字军披甲剑士", "① 卡名")
+	eq(panel.tag_text(), "近战·步兵", "② 类别胶囊")
+	var c: Array = panel.cost()
+	eq(c.size(), 2, "③ 造价两档")
+	eq(String(c[0].get("label", "")), "粮食", "③ 第一档标签")
+	eq(String(c[0].get("value", "")), "70", "③ 第一档数值")
+	eq(String(c[1].get("value", "")), "0", "③ 第二档数值（0 金也照写）")
+	eq(panel.traits(), ["对骑兵伤害", "近战伤害减免"], "④ 特性胶囊")
+	eq(panel.caption_text(), "特 性", "④ 胶囊小标题")
+	eq(panel.paragraph_text(), "信念坚定的战士，对骑兵造成额外伤害，对近战减伤。",
+		"⑤ 一句简述")
+	eq(panel.note_text(), "需2级大本营", "⑥ 置灰原因（贴底）")
+	# 高度按内容长（不是固定框）
+	ok(panel.size.y > 150.0, "★★ 高度随内容长（%.1f）" % panel.size.y)
+	# ★ 位置：左侧、不压牌
+	ok(panel.position.x + panel.size.x <= card_rect.position.x - UiLayoutRes.CARD_HOVER_PANEL_GAP + 0.01,
+		"★★ 面板在牌的左侧、留出净距")
+	ok(not panel.occupied_rect().intersects(card_rect), "★★ 连装饰都不压原卡")
 
-	# 内容再多也不许撑大面板（画不下的部分裁掉）
+	# 内容再多也只会变高（不会被固定框裁掉）
 	var many: Array = []
 	for i in 8:
-		many.append("很长的特性词%d+" % i)
-	tip.show_card("超长测试", "远程骑兵", [], "特性", many, "")
-	eq(tip.size, UiLayoutRes.HOVER_RECT.size, "★ 胶囊多到排不下也不撑大面板")
+		many.append("很长的特性词%d" % i)
+	panel.show_card({"name": "超长测试", "tag": "远程·骑兵", "cost": [], "traits": many,
+		"desc": "很长的说明。", "note": ""}, card_rect, Vector2(1920.0, 1080.0))
+	ok(panel.size.y > 0.0 and panel.showing(), "★ 胶囊多到排不下也只是变高")
 
-	tip.clear()
-	ok(not tip.showing() and not tip.visible, "clear() 之后收起来")
-	eq(tip.title_text(), "", "收起后卡名清空")
-	eq(tip.cell_count(), 0, "收起后格子清空")
-	eq(tip.chips(), [], "收起后胶囊清空")
+	# ★★ 将领特性面板（同一套控件、`rows` 排版、放牌右侧）
+	panel.show_card({"rows": [
+		{"name": "神速", "desc": "移动速度 +25%"},
+		{"name": "铁壁", "desc": "受到远程伤害 -50%"},
+	]}, card_rect, Vector2(1920.0, 1080.0), 1)
+	ok(panel.showing(), "★★ 特性面板也能显示")
+	eq(panel.row_count(), 2, "★★ 两条特性")
+	eq(panel.row_name(0), "神速", "★★ 特性名")
+	eq(panel.row_desc(0), "移动速度 +25%", "★★ 特性说明")
+	ok(panel.position.x >= card_rect.end.x + UiLayoutRes.CARD_HOVER_PANEL_GAP - 0.01,
+		"★★ 特性面板在牌右侧")
+	near(panel.position.y, card_rect.position.y, 0.01, "★★ 特性面板顶对齐")
+	ok(panel.size.y > 90.0, "★★ 特性面板高度按条数长（%.1f）" % panel.size.y)
+	ok(not panel.occupied_rect().intersects(card_rect), "★★ 特性面板也不压原卡")
 
-	tip.queue_free()
+	panel.clear()
+	ok(not panel.showing() and not panel.visible, "clear() 之后收起来")
+	eq(panel.title_text(), "", "收起后卡名清空")
+	eq(panel.cost().size(), 0, "收起后造价清空")
+	eq(panel.traits(), [], "收起后胶囊清空")
+	eq(panel.row_count(), 0, "收起后特性条目清空")
+
+	panel.queue_free()
 	await process_frame
+	ThemeRes.set_animations_enabled(anim_was)
 
 
 ## ★★ 2026.11.16 第二轮（用户口径）：「**所有**左下面板在出现时都需要有**向右滑动**的
@@ -2880,9 +2925,9 @@ func _test_panel_slide_in(main) -> void:
 	var world = main.world
 	var ic = main.input_ctrl
 	var detail = hud.detail_v2
-	var tip = hud.hover_tip
-	ok(detail != null and tip != null, "（前提）两块左下角面板都在")
-	if detail == null or tip == null:
+	var panel = hud.card_hover
+	ok(detail != null and panel != null, "（前提）左下详情牌 + 卡牌悬停面板都在")
+	if detail == null or panel == null:
 		return
 	var base = world.find_base_of("p1")
 	ok(base != null, "（前提）有己方大本营")
@@ -2903,29 +2948,28 @@ func _test_panel_slide_in(main) -> void:
 	await create_timer(0.30).timeout
 	near(detail.position.x, detail_home, 0.5, "★ 动画走完停在目标位置（x=%.1f）" % detail_home)
 
-	# ② 悬停说明牌：每次「从无到有」都滑
+	# ② 卡牌悬停面板**不滑入**：它在牌旁边淡入（90ms）
 	ic.select_units([])
 	hud.refresh()
 	var card = hud.command_card
 	hud.page_tabs.select_page(PageTabsRes.PAGE_BUILD)
 	hud.refresh()
-	card.unhover(0)
 	card.hover(0)
-	var tip_home: float = hud._hover_home_position.x
-	ok(tip.showing(), "（前提）悬停说明牌出现")
-	ok(tip.position.x < tip_home - 1.0,
-		"★★ 悬停说明牌也**从左侧滑入**（x=%.1f < 目标 %.1f）" % [tip.position.x, tip_home])
+	ok(not panel.showing(), "★★ 牌还在放大 / 移动 → 面板先不出现")
 	await create_timer(0.30).timeout
-	near(tip.position.x, tip_home, 0.5, "★ 动画走完停在目标位置")
+	ok(panel.showing(), "（前提）牌站稳之后悬停面板出现")
+	await create_timer(0.20).timeout
+	near(panel.modulate.a, 1.0, 0.02, "★★ 淡入走完 → 完全不透明")
+	var p0: Vector2 = panel.position
 
-	# ③ 同页里换一格 ⇒ 内容当场换、**不再重播滑入**（否则鼠标一扫就一直在滑）
+	# ③ 同页里换一格 ⇒ 内容当场换、面板**跟到新牌旁边**，不重播淡入
 	card.hover(1)
-	ok(tip.showing() and tip.title_text() != "",
-		"（前提）换一格之后说明还在（%s）" % tip.title_text())
-	near(tip.position.x, tip_home, 0.5, "★★ 同一页里换格子**不重播**滑入动画")
+	ok(panel.showing() and panel.title_text() == card.cell_label(1),
+		"（前提）换一格之后面板还在（%s）" % panel.title_text())
+	near(panel.modulate.a, 1.0, 0.02, "★★ 同页换格子不重播淡入")
+	ok(panel.position != p0, "★★ 面板跟着新牌走（位置变了）")
 	card.unhover(1)
-	ok(not tip.showing(), "（收尾）说明收起")
-	near(tip.position.x, tip_home, 0.5, "★ 收起时位置归位（下次滑入不会越滑越靠右）")
+	ok(not panel.showing(), "（收尾）面板收起")
 
 func _test_card_keys(main) -> void:
 	var tabs = main.hud.page_tabs

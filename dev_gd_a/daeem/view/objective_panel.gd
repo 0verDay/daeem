@@ -429,7 +429,7 @@ func _relayout() -> void:
 		_strike_layer.queue_redraw()
 
 
-## 一个 Label 在 `w` 宽下把所有行画出来需要多高（与 hover_tip 同一套读数）。
+## 一个 Label 在 `w` 宽下把所有行画出来需要多高（与悬停浮窗同一套读数）。
 ## ⚠️ 量的时候必须把 `clip_text` 关掉：开着时 Label 的最小尺寸恒为 (1,1)。
 func _measure(l: Label, w: float) -> float:
 	if l == null or l.text == "":

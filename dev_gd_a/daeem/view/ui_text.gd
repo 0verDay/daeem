@@ -54,8 +54,8 @@ static func fit(font: Font, text: String, max_w: float, font_size: int) -> Strin
 
 ## 多行折行：按宽度把一句长文本切成若干行（中文逐字切，英文 / 数字尽量整词）。
 ##   @param max_lines 最多几行；0 = 不限。超出时最后一行补「…」
-## ★ 悬停面板的「说明」段落用它（`hover_tip` 的 body）：面板是**固定尺寸**，
-##   所以行数必须由调用方按可用高度算好再限制。
+## ★ 卡牌悬停面板的「说明」段落用它（`card_hover_panel.gd`）：面板宽度固定 300，
+##   行数由调用方按内容需要量出来后限死（`DESC_MAX_LINES`）。
 static func wrap(font: Font, text: String, max_w: float, font_size: int,
 		max_lines: int = 0) -> PackedStringArray:
 	var out := PackedStringArray()

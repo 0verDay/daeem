@@ -50,7 +50,7 @@ signal card_drag_moved(entry: Dictionary, screen_pos: Vector2)
 signal card_drag_finished(entry: Dictionary, screen_pos: Vector2, index: int)
 
 ## ★★ 某一格被**鼠标悬停**（进入 / 离开）时发出，带上格子序号。
-##   hud 收到后会弹「悬停详情面板」（见 view/hover_tip.gd 与 hud._hover_detail）。
+##   hud 收到后会弹「卡牌悬停面板」（见 view/card_hover_panel.gd 与 hud._card_hover_content）。
 ##   ★ 只报序号、不报内容：内容是 hud 按**当前的 entries** 取的 ——
 ##     与快捷键激活那条路（`activate_index`）同一套判据，界面不会出现
 ##     「点的是这一格、说明写的是上一页那一格」这种错位。
@@ -104,7 +104,8 @@ const HOVER_RAISE_SEC := 0.14
 const HOVER_RAISE_PX := UiLayoutRes.CARD_HOVER_RAISE_PX
 ## ★★ 2026.11.16（用户口径）：「卡牌在被悬停时应当放大」。
 ##   只放大**被悬停的那一张**；邻居保持 1.0，靠横向让开给放大留出空间。
-const HOVER_SCALE := 1.6
+## ★ 2026.11.19：倍率搬到 `UiLayoutRes.CARD_HOVER_SCALE`（悬停面板定位也要读它）。
+const HOVER_SCALE := UiLayoutRes.CARD_HOVER_SCALE
 var _drag_index: int = -1
 var _drag_start_global := Vector2.ZERO
 var _dragging_card: bool = false
@@ -1872,6 +1873,20 @@ func cell_at(i: int) -> Button:
 	if i < 0 or i >= _cells.size():
 		return null
 	return _cells[i]
+
+
+## 第 i 格在**最终姿势**下的屏幕矩形（`hovered = true` = 放大 1.6 + 抬起 28）。
+##
+## ★ 卡牌悬停面板按它定位：鼠标进入那一帧牌还在原位、邻牌还在从让开位回收，
+##   读控件当前 `position` / `scale` 会算出一个「正在动」的矩形（面板会压到牌上）。
+##   见 `ui_layout.card_pose_rect()`。
+func cell_pose_rect(i: int, hovered: bool) -> Rect2:
+	var vis := _visible_entry_indices()
+	var ordinal := vis.find(i)
+	if ordinal < 0:
+		return Rect2()
+	return UiLayoutRes.card_pose_rect(ordinal, vis.size(), hovered,
+		get_global_transform_with_canvas())
 
 
 ## 第 i 格显示的名字（空格子为空串）
