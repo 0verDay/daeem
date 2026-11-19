@@ -7,6 +7,131 @@
 
 本版本为在godot引擎内的原型开发，仅展示完整的局内玩法
 
+### 2026.11.19 换选中误播手牌入场 + 手牌张力（P0/P1）
+
+1. **Bug**（用户报告）：选中另一个页签 / 手牌不同的建筑或部队时，会触发手牌出现动效。
+   根因：`_sync_tabs()` 按选中对象重排页签时，`page_tabs.set_pages()` 同步发
+   `page_changed`，`_on_page_changed()` 把它当成玩家切页并调用 `_rebuild_card(true)`。
+   现在用 `_sync_tabs_guard` 区分「选中驱动的换页」与「玩家主动切页」：
+   前者只换内容，后者才播入场。新增 `_test_selection_switch_no_deck_anim` 回归。
+2. **静态张力**：扇形张角 14° → 18°，重叠比例 0.15 → 0.12，外圈下沉 6px 形成弧线；
+   卡面 / 填充层投影加大到 10px、偏移 8px。
+3. **悬停张力**：放大 1.5 → 1.6，抬起 22 → 28px，邻居让开 34 → 42px；
+   缩放走 `TRANS_BACK` 轻微过冲；邻居延迟最多 25ms 依次让开；悬停描边 2px → 3px。
+4. **拖拽张力**：其余手牌下沉从 0.82 / 40px 加强到 0.78 / 52px；
+   被拖的牌按横向速度最多倾斜约 5°，松手 / 回手自然回正。
+5. **范围**：命令卡与科技页共用同一套几何 / 数值 / 手感。
+6. **测试**：`test_ui` **1492 项**（含新增的换选中不播入场断言）、`test_tech` 115、
+   `test_fill_button` 200 全过。
+
+### 2026.11.19 城墙阻挡所有阵营的移动，但不阻挡远程攻击
+
+1. **需求**（用户口径）：城墙要能阻挡所有单位的移动，不再区分阵营让部队穿过；
+   但城墙不阻挡远程攻击。
+2. **移动**：`logic/building.gd` 的 `blocks()` / `body_blocks()` 对**墙类**
+   （`is_wall_building()`）硬编码返回 `true` —— 同阵营 / 盟友 / 敌方都不能穿过城墙。
+   `data/config.json` 的 `wall` / `stone_wall` 也同步把 `blocks_player` /
+   `body_blocks_player` 改为 `true`，保持数据自解释；但代码不再依赖这几个键。
+3. **远程**：投掷物本来就只沿「射手 → 目标」飞行并结算命中，不和中途建筑做碰撞
+   ⇒ 城墙不阻挡箭矢 / 投石车等远程攻击。新增回归测试：
+   `test_building_body._test_ranged_over_wall()` 隔墙发射投掷物并命中靶子。
+4. **文档 / 注释**：`building.gd` / `pathfinder.gd` / `collision.gd` / `faction.gd`
+   的阻挡说明、`docs/build_points.md`、`docs/pitfalls.md` 同步。
+5. **测试**：`test_logic` 278 / `test_building_body` **73** / `test_alliance` 77 /
+   `test_diagonal` 49 / `test_path_feel` 36 / `test_attack_orders` 108 /
+   `test_collision` 15 全过。原来「己方 / 盟友可穿过城墙」的断言已改写为「一律阻挡」。
+
+### 2026.11.19 城墙改为只能由战役编辑器预置（玩家 / AI 均不可建造）
+
+1. **需求**（用户口径）：取消玩家建造城墙的能力；玩家和 AI 都不能建造木墙 / 石墙，
+   城墙仅能从战役编辑器中由设计师预先摆放。
+2. **权威规则**：`world.build_reject_reason()` 对任何 `BuildingRes.is_wall_type()` 直接返回
+   `wall_preplaced`；`command_processor.apply_build()` 在等级检查之前就拒绝墙类命令，
+   并推 `build_rejected.reason = wall_preplaced`。预置仍走 `add_building()` /
+   关卡 `start_buildings` / 编辑器，不受影响。
+3. **界面**：`hud._build_entries()` 过滤墙类 ⇒ 建筑页不再有木墙 / 石墙牌
+   （现在 Q=哨塔 / W=粮田 / A=警戒塔 / S=房屋 / C=矿脉）；`world.build_anchors_for()`
+   对墙类返回空数组；HUD 新增 `wall_preplaced` 拒因文案。
+4. **教程适配**：`ce_xs_2` c0 给 4 个建造点位；建设目标从「6 木墙 / 哨塔 + 2 粮田」
+   改为「2 哨塔 + 2 粮田」，描述写明城墙只能由设计师预先摆放。
+5. **AI**：`ai_build._try_tower_then_walls()` 只造塔；`_try_wall()` / `_try_wall_ring()`
+   保留为空实现；`ai.commander.build.wall_enabled` 默认 `false`、`wall_hard_max = 0`。
+6. **测试**：`test_logic` 278 / `test_build_points` 284 / `test_building_tiers` 24 /
+   `test_ai_commander` 365 / `test_ui` 1489 / `test_unit_editor` 311 /
+   `test_clan_volunteer_church` 329 / `test_tutorial_ce_xs_2` 80 /
+   `test_all_levels_outcome` 284 全过。新增/改写断言覆盖：
+   建筑页无墙牌、墙命令必拒且不扣钱、AI 不造墙、预置城墙仍可用、教程新目标。
+6. **文档**：`docs/build_points.md`、`docs/README.md`、`docs/card_drag.md`、
+   `ai_doc/ai-commander-current-status.md` 同步新口径。
+
+### 2026.11.19 义勇军 / 教会军独立 AI：补回归测试与文档
+
+1. **需求**：义勇军与教会军的 AI 要与王朝 / 帝国走**同一条设置路径**，各自独特。
+2. **现状核对**（不改数值）：两派早已在 `data/config.json → clan.list[].commander_ai`
+   各有一套块，运行时 `AiProfileRes.build(cfg, faction, ..., clan_of(faction))` 也确实读到：
+   - 义勇军：40 秒开打、`army_cap 1.1`、生产 / 指令节奏更快、职能 `line / guerrilla / line`、
+     科技第一项「侵略如火」；
+   - 教会军：48 秒开打、倍率基准、职能 `line / ranged / line`、守军 8、
+     科技第一项「不自由税」（阵线推进 + 传教染区）。
+3. **测试**：`tests/test_clan.gd` 扩展 `_test_clan_ai_profile` —— 纯函数层锁定两派的
+   进攻时机 / 职能轮换 / 队伍规模 / 经济储备 / 倍率 / 科技优先级，并新增
+   `ai_test_clan` 关卡的**运行时控制器**断言（p1 = 义勇军 40 秒、p2 = 教会军 48 秒）。
+   `test_clan` **449 项全过**（原 301）。
+4. **文档**：`ai_doc/ai-commander-current-status.md` 的「派系整体倍率」补上义勇军 / 教会军，
+   并注明四派共用 `clan.list[].commander_ai` 这条路径与测试基线。
+
+### 2026.11.19 手牌回手动效 + 建筑「拆除」卡牌
+
+1. **报障**（用户口径）：① 卡牌回手时会突变大小；② 成功打出一张牌后，新手牌应当
+   从屏幕下方以**正常大小**升到手牌位；③ 被拒绝 / 取消的牌回手时应当**线性缩小**；
+   ④ 选中己方建筑时，操作页要有「拆除」卡牌。
+2. **回手突变大小**：`view/command_card.gd` 不再在拖起 / 松手时一帧硬写 `scale = 1.0`。
+   拖起时用 0.12s 缓动收回（`_drag_scale_tween`），松手后由收尾动画接管；科技牌
+   （`view/tech_grid.gd`）同一条逻辑。
+3. **成功使用 = 新卡从屏幕下方升起**：`_restore_card_at_slot()` 的起点改成
+   `y = CARD_RECT.size.y + 8`（整张牌在屏幕外），以 **1.0 倍**、0.26s 缓动升到当前槽位；
+   手牌其它牌的位置 / 尺寸 / 层级一概不动。科技页新增 `_animate_used_card_in()`，同一手感。
+4. **被拒绝 / 取消 = 线性缩回**：返程位置仍走 CUBIC ease-out，缩放单开一条
+   `TRANS_LINEAR` Tween 收到 1.0 —— 不再跟着位置曲线「先猛缩、后拖尾」，也不会末帧硬切。
+5. **建筑拆除**：`logic` 早已有 `demolish` 命令，这次补回 UI 入口：
+   - `view/input_controller.gd` 新增 `request_building_demolish(b)`（按地块发命令）；
+   - `view/hud.gd` 给所有己方建筑（大本营 / 区划中心除外）挂「拆除」卡；
+   - **必须拖出 UI、在地图上松手**才拆（键盘 / 点击只给提示），拆回 UI 内 = 取消；
+   - 不返还资源；大本营由逻辑层硬拒，区划中心是无敌中立障碍。
+6. **测试**：`test_ui` **1494 项**全过（新增：操作页拆除牌、直接激活不拆、拖地图拆除、
+   新卡起点在屏幕外且为 1.0 倍、升到槽位）；`test_logic` 279 / `test_view` 102 /
+   `test_tech` 115 / `test_ui_kit` 97 / `test_building_rules` 30 / `test_building_tiers` 23 全过。
+   顺手修掉 `test_ui` 里 `_test_hover_panel` 未 `await` 的竞态。
+
+### 2026.11.19 科技牌悬停补回说明段 + 编辑器「九宫格」口径改成扇形手牌
+
+1. **报障**（用户实测）：① 科技卡牌悬停的文本丢失了；② 编辑器里还在用「九宫格 / 第几行第几列」
+   描述科技牌的顺序，要统一口径。
+2. **根因①**：2026.11.18 重排版悬停牌时，科技的 `desc`（那句完整说明）被整段丢掉，
+   只剩 `line`（短效果）当胶囊 —— 牌面上看着就是「中间空一块、字没了」。
+   ⇒ `view/hover_tip.gd` 新增**说明段落**（`show_card(..., body)`）：
+   - 固定尺寸的牌（377×260）里按可用高度**折行 + 限行**（新增 `UiTextRes.wrap()`，
+     优先在「，。；、）」等断点断，最后一行超出时补「…」）；
+   - 有段落时整块牌**从上往下排**（说明 → 效果胶囊），不再把胶囊钉在牌底、中间留一大块空白；
+     没有段落的（建筑 / 单位 / 将领）**沿用旧版式**，胶囊仍贴底。
+   `hud._hover_tech()` 把 `desc` 传成 body ⇒ 科技悬停恢复成「名字 / 科技 / 说明 / 效果 + 置灰原因」。
+3. **根因②**：科技页早就不是九宫格了 —— 它和手牌一样是**一排扇形卡牌**
+   （`view/tech_grid.gd::_layout_fan`），但 `tools/tech_editor` 里仍写着「3×3 列优先、行 = 阶」。
+   实际摆法：9 个槽位**每 3 条一组**，扇形从左到右依次是 **一阶组 → 二阶组 → 三阶组**
+   （组内按槽位序号 1 → 4 → 7）。也就是**斜着数**：第 1/4/7 格一阶、第 2/5/8 格二阶、第 3/6/9 格三阶。
+4. **口径统一**（只改文案，判定逻辑一个字没动）：
+   - 槽位字段标题：`第 1 格（1 阶第 1 张）`（原来写「第 1 行 / 左列」）；
+   - 槽位页开头说明、`阶` 字段的标签与帮助、校验提示、预览抬头（`1 阶（1 本）· 0 金/秒`）；
+   - `tools/tech_editor/README.md` 那一整节「科技页的 9 格是列优先排的」重写成
+     「科技页是一排扇形卡牌（9 个槽位、按阶分 3 组）」，并配了新的示意图；
+   - 游戏侧 `view/tech_grid.gd` / `view/hud.gd` 的同一段注释也改成扇形说法。
+5. **顺手补的**：`tools/tech_editor` 的**效果键注册表**漏了义勇军 / 教会军那 21 个键
+   （`blitz_*` / `fatal_*` / `freedom_plague_*` / `gold_per_unit_*` / `missionary_plague` …），
+   表单会少行、并报「游戏不认识的键」。现已补齐（含中文名 / 上下限 / 单位 / 一句说明）。
+6. **测试**：`test_ui` **1477 项**（新增：科技悬停的 `paragraph_text()` = `desc`、
+   建筑悬停没有段落）；`tools/tech_editor` 的 `test_model` 95 / `test_app` 80 全过；
+   `test_tech` / `test_clan_tech` / `test_prepare` / `test_smoke` 全过。
+
 ### 2026.11.18 建造点位生成机制 / 边缘区合并
 
 1. **建造点位不再属于地图**：每关在战役编辑器「区划」页给每个区划填

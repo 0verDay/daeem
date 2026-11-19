@@ -153,8 +153,8 @@ static func _try_move(world, cfg: ConfigRes, u, move: Vector2) -> bool:
 
 
 ## 这个位置站得住吗：在地图内、地形可通行、建筑对自己的阵营不阻挡（格级 + 本体级）。
-## 这里**故意用 passable()**（而不是「不能有建筑」）：城墙对己方是放行的，
-## 所以己方单位被挤到自家城墙那一格上是被允许的 —— 否则自家城门处会堵成一团。
+## 这里用 passable()：大本营 / 箭塔格级放行，靠本体级再挡。
+## ★★ 2026.11.19：城墙对**所有阵营**都挡（格级 + 本体级），己方单位也不能站进墙里。
 ## ★ 本体级另算：大本营 / 箭塔的格子对敌方是「格级放行」的，但本体不能站进去。
 static func _can_stand(world, cfg: ConfigRes, u, p: Vector2) -> bool:
 	var t := Vector2i(floori(p.x), floori(p.y))

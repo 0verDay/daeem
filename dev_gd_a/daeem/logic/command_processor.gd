@@ -599,12 +599,10 @@ static func _ids_of(group: Array) -> Array:
 ## 建造命令：owner 缺省时用本地阵营
 ##
 ## ★★ 2026.11.15（建造系统重做）：落点规则不再由命令层「各自判一套」，
-##   统一走 `world.build_reject_reason()`：
-##     · **非城墙建筑** → 必须落在己方区划的**建造点位**上（进图时按关卡数量随机生成）；
-##     · **城墙** → 落点是某个**区划中心**，一次把整圈建满（跳过被地形/建筑挡住的位置），
-##       花费按**一张牌**算（不是按格数）——用户口径「扣一张牌的费建满」。
-##   ⚠️ 城墙的 `tx/ty` 就是中心格（界面拖到中心上松手），`zone_id` 可选；
-##      没给时用中心格反查区划，二者都给时以 `zone_id` 为准（联机 / 脚本更稳）。
+##   统一走 `world.build_reject_reason()`：可建造建筑必须落在己方区划的
+##   **建造点位**上（进图时按关卡数量随机生成）。
+## ★★ 2026.11.19（用户口径）：**城墙不再走建造命令** —— 木墙 / 石墙只能由战役编辑器
+##   预先摆在地图上；玩家与 AI 发来的任何 `build` 墙命令都直接拒绝（`wall_preplaced`）。
 static func apply_build(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 	var owner := String(cmd.get("faction", world.my_faction))
 	var type := String(cmd.get("build_type", cmd.get("build", "")))
@@ -617,6 +615,14 @@ static func apply_build(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 		return false
 	var tx := int(cmd.get("tx", -1))
 	var ty := int(cmd.get("ty", -1))
+	# ★★ 2026.11.19（用户口径）：**城墙不再允许建造** —— 木墙 / 石墙只能由
+	#   战役编辑器在地图数据里预先摆放，玩家和 AI 都不能通过建造命令生成。
+	#   ⚠️ 这条必须排在 `building_unlocked` 之前：石墙在 1 级大本营本来会先报
+	#      `base_level`，但「墙根本不能建」比「等级不够」更根本。
+	if BuildingRes.is_wall_type(type):
+		world.push_event({"type": "build_rejected", "tile": Vector2i(tx, ty),
+			"reason": "wall_preplaced", "faction": owner})
+		return false
 	# ★★ 2026.10.26：建筑页第二行（石墙 / 警戒塔）要 2 级大本营。
 	#    UI 的格子会置灰，这里是权威侧兜底（命令仍然可能来自键盘 / 联机 / 测试）。
 	if not world.building_unlocked(owner, type):
@@ -634,26 +640,6 @@ static func apply_build(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 	#   建造按 config 原价扣。
 	var raw_cost: Variant = def.get("cost", {})
 	var cost: Dictionary = raw_cost if typeof(raw_cost) == TYPE_DICTIONARY else {}
-	# ★★ 城墙：先确认这一圈还有可建的位置（`build_reject_reason` 已经判过），
-	#   然后**只扣一张牌的钱**，再把整圈建上。
-	if BuildingRes.is_wall_type(type):
-		# ★★ 区划以**中心格反查**为准（界面 / AI 都会把中心格的 tx,ty 发上来）：
-		#   命令里的 `zone_id` 只是冗余提示，不能让它决定「钱扣了、圈建到别处」。
-		var zid := -1
-		if world.zones != null:
-			zid = int(world.zones.center_zone_at_id(tx, ty))
-		if zid < 0:
-			world.push_event({"type": "build_rejected", "tile": Vector2i(tx, ty),
-				"reason": "not_zone_center", "faction": owner})
-			return false
-		# ★ 钱从**下单那一方**的池子里出（合作模式：客机花的不是房主的钱）。
-		#   池子为 null = 这一方没有资源库 = 资源无限（见 world.resource_pool_for）。
-		if not EconomyRes.try_spend(cfg, world.resource_pool_for(owner), cost):
-			world.push_event({"type": "build_rejected", "tile": Vector2i(tx, ty),
-				"reason": "cost", "faction": owner})
-			return false
-		var ring: Dictionary = world.build_wall_ring(zid, type, owner)
-		return int(ring.get("built", 0)) > 0
 	# ★ 钱从**下单那一方**的池子里出（合作模式：客机花的不是房主的钱）。
 	#   池子为 null = 这一方没有资源库 = 资源无限（见 world.resource_pool_for）。
 	if not EconomyRes.try_spend(cfg, world.resource_pool_for(owner), cost):

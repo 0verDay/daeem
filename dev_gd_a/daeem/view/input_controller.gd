@@ -2318,12 +2318,22 @@ func request_building_upgrade_cancel(b) -> bool:
 	return true
 
 
-## 拆除在哪：**这一版没有界面入口**。
-## ★ 按需求「去掉这个拆除逻辑，暂时不绑定按键」：原来 X / Delete 会把选中的建筑拆掉，
-##   现在这两个键**不再绑任何东西**（键位可能留给别的功能）。
-## ★ 逻辑层那条命令照旧在（`command_processor.apply_demolish`，测试也在直接调它）——
-##   要恢复入口只需要在 `handle_key()` 里加回一个 case、再往
-##   `command_issued` 里发一条 `{"kind": "demolish", "tx":…, "ty":…}`。
+## 拆除某一栋建筑（★ 2026.11.19：入口回到「操作」页的拖拽卡牌）。
+##
+## ★ 与升级同一条约定：只发**按地块定位**的可序列化命令，能不能拆由
+##   `command_processor.apply_demolish` 判（自己的、不是大本营 / 区划中心）。
+## ★ 演出闸门用 `build`：`game_scene3d._story_command_action()` 把 `demolish`
+##   归到 `ACT_BUILD`，与建造共用同一条「现在能不能动建筑」的剧本限制。
+func request_building_demolish(b) -> bool:
+	if not _action_ok("build"):
+		return false
+	if world == null or b == null or not b.alive:
+		return false
+	command_issued.emit({
+		"kind": "demolish", "tx": b.tx, "ty": b.ty,
+		"faction": world.my_faction,
+	})
+	return true
 
 
 ## 命中判定：世界坐标 → 最近的、半径内的单位（**己方与敌方都算**）。

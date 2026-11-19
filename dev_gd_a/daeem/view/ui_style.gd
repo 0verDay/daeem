@@ -288,11 +288,12 @@ static func card_normal(filled: bool = true) -> StyleBoxFlat:
 	s.border_color = line()
 	s.set_border_width_all(2)
 	s.set_corner_radius_all(9)
-	# ★ 投影参数**留着不动**：`fill_button` 会把它搬到填充层下面去画
+	# ★ 投影参数：`fill_button` 会把它搬到填充层下面去画
 	#   （见那边的 `_ensure_shadow()`），这样投影不会压住金、也不会被卡身裁掉。
-	s.shadow_color = Color(0.0, 0.0, 0.0, 0.72)
-	s.shadow_size = 7
-	s.shadow_offset = Vector2(0.0, 6.0)
+	# ★★ 2026.11.19：加深加大，让手牌从桌面「浮」起来。
+	s.shadow_color = Color(0.0, 0.0, 0.0, 0.82)
+	s.shadow_size = 10
+	s.shadow_offset = Vector2(0.0, 8.0)
 	s.content_margin_left = 5.0
 	s.content_margin_right = 5.0
 	s.content_margin_top = 5.0
@@ -507,9 +508,10 @@ static func tech_fill() -> StyleBoxFlat:
 	s.border_color = line()
 	s.set_border_width_all(2)
 	s.set_corner_radius_all(9)
-	s.shadow_color = Color(0.0, 0.0, 0.0, 0.72)
-	s.shadow_size = 7
-	s.shadow_offset = Vector2(0.0, 6.0)
+	# ★★ 2026.11.19：与命令卡同一档投影（科技页也是同一手牌）。
+	s.shadow_color = Color(0.0, 0.0, 0.0, 0.82)
+	s.shadow_size = 10
+	s.shadow_offset = Vector2(0.0, 8.0)
 	s.set_content_margin_all(2.0)
 	return s
 
@@ -517,6 +519,8 @@ static func tech_fill() -> StyleBoxFlat:
 static func tech_fill_hover() -> StyleBoxFlat:
 	var s := tech_fill()
 	s.border_color = ThemeRes.with_alpha(ThemeRes.accent_bright(), 0.9)
+	# ★★ 2026.11.19：与命令卡悬停一致，边框加粗一档。
+	s.set_border_width_all(3)
 	return s
 
 

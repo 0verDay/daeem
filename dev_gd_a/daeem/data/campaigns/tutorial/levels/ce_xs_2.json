@@ -41,7 +41,8 @@
       "id": 0,
       "owner": "",
       "population": 20,
-      "population_cap": 40
+      "population_cap": 40,
+      "build_point_count": 4
     }
   ],
   "start_units": [],

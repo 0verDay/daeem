@@ -232,9 +232,10 @@ static func _build_ce_xs_2(director, world) -> void:
 		{"kind": "dialogue", "text": "我们终于拿下了这个地方，现在是时候休养生息了"},
 		{"kind": "grant_resources", "food": 1000, "gold": 1000},
 
-		# 6) 建设目标：6 个木墙 / 哨塔 + 2 个粮田；计数实时刷新、不重播打字机。
-		{"kind": "objective_set", "title": "建立防御0/6 建造粮田0/2",
-			"desc": "把建筑牌拖到高亮的建造点位上（城墙拖到区划中心，一次围一圈）", "quiet": true},
+		# 6) 建设目标：2 哨塔 + 2 粮田；计数实时刷新、不重播打字机。
+		#   ★★ 2026.11.19：城墙不再能建造，本关 c0 给了 4 个建造点位（见关卡 zones[].build_point_count）。
+		{"kind": "objective_set", "title": "建造哨塔0/2 建造粮田0/2",
+			"desc": "把建筑牌拖到高亮的建造点位上（城墙只能由设计师预先摆放）", "quiet": true},
 		{"kind": "wait_until", "condition": func(): return _tut2_build_goal(world)},
 		{"kind": "objective_done"},
 
@@ -335,13 +336,14 @@ static func _tut2_assign_enemy_zones(world) -> void:
 	world.mark_vision_dirty()
 
 
-## 建设目标：返回 true = 两项都完成；同时把 0/6、0/2 的实时计数写进目标标题。
+## 建设目标：返回 true = 两项都完成；同时把 0/2、0/2 的实时计数写进目标标题。
+## ★★ 2026.11.19：城墙只能预置，不再计入「玩家建造」目标；这里只数哨塔与粮田。
 static func _tut2_build_goal(world) -> bool:
-	var walls := _tut2_count_buildings(world, ["wall", "tower"])
+	var towers := _tut2_count_buildings(world, ["tower"])
 	var farms := _tut2_count_buildings(world, ["farm"])
-	_tut2_set_title(world, "建立防御%d/6 建造粮田%d/2"
-		% [mini(walls, 6), mini(farms, 2)])
-	return walls >= 6 and farms >= 2
+	_tut2_set_title(world, "建造哨塔%d/2 建造粮田%d/2"
+		% [mini(towers, 2), mini(farms, 2)])
+	return towers >= 2 and farms >= 2
 
 
 ## 占领目标：只数剩余三个区划（c1/c2/c3）。

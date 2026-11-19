@@ -31,6 +31,8 @@ const AiProfileRes = preload("res://logic/ai_profile.gd")
 const DT := 1.0 / 60.0
 ## see_ai 走的那个关卡（同一张 between_moutains，双方 commander AI）。
 const TEST_LEVEL := "res://data/campaigns/demo/levels/ai_test_battle.json"
+## ★★ 2026.11.19：义勇军 vs 教会军的展示关（双方 commander AI）。
+const TEST_LEVEL_CLAN := "res://data/campaigns/demo/levels/ai_test_clan.json"
 
 func _initialize() -> void:
 	_case_name = "test_clan"
@@ -627,6 +629,45 @@ func _test_clan_ai_profile(cfg) -> void:
 	ok(float(p2["economy"]["reserve_gold"]) > float(p1["economy"]["reserve_gold"]),
 		"★ 帝国的黄金储备更高（留钱买精锐）")
 
+	# ---- ★★ 2026.11.19：义勇军 / 教会军走**同一条**配置路径
+	#   （`clan.list[].commander_ai`），各自一套与母派系不同的 AI。
+	var p_v := AiProfileRes.build(cfg, "p1", [], {}, "dynasty_volunteer")
+	var p_c := AiProfileRes.build(cfg, "p2", [], {}, "empire_church")
+	for cid in ["dynasty_volunteer", "empire_church"]:
+		ok(not cfg.clan_commander_ai(cid).is_empty(),
+			"★★ %s 也写了 commander_ai（与王朝/帝国同一条路径）" % cid)
+	near(float(p_v["auto"]["attack_after_sec"]), 40.0, 1e-9,
+		"★★ 义勇军更早开打（40 秒，人海压上）")
+	near(float(p_c["auto"]["attack_after_sec"]), 48.0, 1e-9,
+		"★★ 教会军进攻时机居中（48 秒，先摆阵线）")
+	ok(float(p_v["auto"]["attack_after_sec"]) < float(p1["auto"]["attack_after_sec"]),
+		"★★ 义勇军比王朝更早（40 < 55）")
+	ok(float(p_v["auto"]["attack_after_sec"]) > float(p2["auto"]["attack_after_sec"]),
+		"★★ 义勇军比帝国更晚一点（40 > 38）")
+	ok(float(p_c["auto"]["attack_after_sec"]) < float(p1["auto"]["attack_after_sec"]),
+		"★★ 教会军比王朝更早（48 < 55）")
+	# 队伍职能：义勇军 = 人海 + 游击；教会军 = 阵线 + 远程。
+	var cv: Array = p_v["roles"]["cycle"]
+	var cc: Array = p_c["roles"]["cycle"]
+	eq(cv.count("line"), 2, "★★ 义勇军职能轮换里「线列」占 2/3")
+	eq(cv.count("guerrilla"), 1, "★★ 义勇军带一队游击（踩敌方区划）")
+	eq(cc.count("line"), 2, "★★ 教会军职能轮换里「线列」占 2/3")
+	eq(cc.count("ranged"), 1, "★★ 教会军带一队远程（阵线后输出）")
+	eq(String(cv[0]), "line", "★★ 义勇军第一支队伍是线列")
+	eq(String(cc[1]), "ranged", "★★ 教会军第二支队伍是远程")
+	# 规模 / 经济：义勇军更大更穷，教会军更重视粮食与人口。
+	eq(float(p_v["production"]["home_team_size"]), 9.0, "★ 义勇军守军规模 9")
+	eq(float(p_c["production"]["home_team_size"]), 8.0, "★ 教会军守军规模 8")
+	ok(float(p_v["economy"]["reserve_food"]) < float(p_c["economy"]["reserve_food"]),
+		"★★ 义勇军存粮更少（兵便宜、死得起）")
+	ok(float(p_v["economy"]["reserve_gold"]) < float(p_c["economy"]["reserve_gold"]),
+		"★★ 义勇军存金更少")
+	# 各自的科技优先级第一项（决定开局打法）。
+	eq(String(p_v["build"]["tech_priority"][0]), "dv_blitz",
+		"★★ 义勇军科技第一项 = 侵略如火")
+	eq(String(p_c["build"]["tech_priority"][0]), "ec_unfree_tax",
+		"★★ 教会军科技第一项 = 不自由税")
+
 	# ---- ★★ 2026.11.17：整体倍率层（乘在难度包之后）
 	# 默认 normal 的基线：army_interval 1.2 / production 1.0 / build 1.0 / reaction 1.2 / cap 36。
 	near(float(p1["army_interval_mult"]), 1.2 * 1.1, 1e-9,
@@ -643,6 +684,21 @@ func _test_clan_ai_profile(cfg) -> void:
 		"★★ 帝国反应更快（×0.85）")
 	eq(int(p1["army_cap"]), int(round(36.0 * 1.05)), "★★ 王朝兵力上限 +5%")
 	eq(int(p2["army_cap"]), int(round(36.0 * 0.95)), "★★ 帝国兵力上限 -5%")
+	# 义勇军 / 教会军也走同一条倍率层，但数值与母派系不同。
+	near(float(p_v["army_interval_mult"]), 1.2 * 0.95, 1e-9,
+		"★★ 义勇军指令节奏更快（×0.95）")
+	near(float(p_c["army_interval_mult"]), 1.2 * 1.0, 1e-9,
+		"★★ 教会军指令节奏保持基准（×1.0）")
+	near(float(p_v["production_interval_mult"]), 1.0 * 0.9, 1e-9,
+		"★★ 义勇军生产 tick 更快（×0.9）")
+	near(float(p_c["production_interval_mult"]), 1.0 * 1.0, 1e-9,
+		"★★ 教会军生产 tick 保持基准（×1.0）")
+	near(float(p_v["reaction_delay_sec"]), 1.2 * 0.95, 1e-9,
+		"★★ 义勇军反应更快（×0.95）")
+	near(float(p_c["reaction_delay_sec"]), 1.2 * 1.0, 1e-9,
+		"★★ 教会军反应保持基准（×1.0）")
+	eq(int(p_v["army_cap"]), int(round(36.0 * 1.1)), "★★ 义勇军兵力上限 +10%")
+	eq(int(p_c["army_cap"]), int(round(36.0 * 1.0)), "★★ 教会军兵力上限不变")
 
 	# 倍率是**乘在难度之后**：hard 的 income 1.25 / production 0.75 再乘 0.5。
 	var p_hard := AiProfileRes.build(cfg, "p1", [{
@@ -659,7 +715,8 @@ func _test_clan_ai_profile(cfg) -> void:
 		"★★ 倍率层乘在难度节奏之后（0.75 × 0.5）")
 
 	# ---- 每一条编成里的兵种都必须是**这一派真能招的**（写错一个 id 就等于白配）
-	for pair in [["dynasty", p1], ["empire", p2]]:
+	for pair in [["dynasty", p1], ["empire", p2],
+			["dynasty_volunteer", p_v], ["empire_church", p_c]]:
 		var cid := String(pair[0])
 		var prof: Dictionary = pair[1]
 		for role in ["line", "ranged", "guerrilla"]:
@@ -707,6 +764,48 @@ func _test_clan_ai_profile(cfg) -> void:
 		"★★ 王朝控制器的指令节奏 = 难度 1.2 × 派系 1.1")
 	near(float(ai2.profile["production_interval_mult"]), 1.0 * 0.9, 1e-9,
 		"★★ 帝国控制器的生产节奏 = 难度 1.0 × 派系 0.9")
+
+	# ---- ★★ 2026.11.19：义勇军 / 教会军**运行时**也必须拿到自己的 profile
+	#   （不能只在纯函数里对；见 ai_test_clan 关卡的双方 commander）。
+	var lv_branch = LevelRes.load_level(null, TEST_LEVEL_CLAN, cfg)
+	if lv_branch == null:
+		ok(false, "（前提）ai_test_clan 关卡载得出来")
+		return
+	eq(String(lv_branch.faction_config("p1").get("clan", "")), "dynasty_volunteer",
+		"（前提）义勇军关卡 p1 的派系是 dynasty_volunteer")
+	eq(String(lv_branch.faction_config("p2").get("clan", "")), "empire_church",
+		"（前提）教会军关卡 p2 的派系是 empire_church")
+	var ov_branch := {}
+	for meta in lv_branch.faction_meta:
+		ov_branch[String((meta as Dictionary).get("id", ""))] = LevelRes.AI_COMMANDER
+	var wb = WorldRes.create_from_level(cfg, lv_branch, "p1", lv_branch.seats(), true,
+		ov_branch, {}, -1, true)
+	if wb == null:
+		ok(false, "（前提）义勇军 / 教会军的 commander 世界建得出来")
+		return
+	eq(wb.clan_of("p1"), "dynasty_volunteer", "★★ 运行时 p1 的派系 = 义勇军")
+	eq(wb.clan_of("p2"), "empire_church", "★★ 运行时 p2 的派系 = 教会军")
+	var ai_v = wb.ai_commanders.get("p1", null)
+	var ai_c = wb.ai_commanders.get("p2", null)
+	if ai_v == null or ai_c == null:
+		ok(false, "（前提）义勇军 / 教会军的 commander 控制器都在")
+		return
+	near(float(ai_v.profile["auto"]["attack_after_sec"]), 40.0, 1e-9,
+		"★★ 义勇军控制器 profile 里就是 40 秒")
+	near(float(ai_c.profile["auto"]["attack_after_sec"]), 48.0, 1e-9,
+		"★★ 教会军控制器 profile 里就是 48 秒")
+	eq((ai_v.profile["roles"]["cycle"] as Array).count("guerrilla"), 1,
+		"★★ 义勇军控制器带一队游击")
+	eq((ai_c.profile["roles"]["cycle"] as Array).count("ranged"), 1,
+		"★★ 教会军控制器带一队远程")
+	near(float(ai_v.profile["army_interval_mult"]), 1.2 * 0.95, 1e-9,
+		"★★ 义勇军控制器指令节奏 = 难度 1.2 × 派系 0.95")
+	near(float(ai_c.profile["reaction_delay_sec"]), 1.2 * 1.0, 1e-9,
+		"★★ 教会军控制器反应 = 难度 1.2 × 派系 1.0")
+	eq(String((ai_v.profile["build"]["tech_priority"] as Array)[0]), "dv_blitz",
+		"★★ 义勇军控制器第一科技 = 侵略如火")
+	eq(String((ai_c.profile["build"]["tech_priority"] as Array)[0]), "ec_unfree_tax",
+		"★★ 教会军控制器第一科技 = 不自由税")
 
 
 ## 派系块本身要「形状正确」：只许写 ai.commander 里真有意义的键，且不能碰 difficulty。

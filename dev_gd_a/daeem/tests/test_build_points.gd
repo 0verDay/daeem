@@ -212,81 +212,64 @@ func _test_generation(cfg) -> void:
 		ok(w.map.terrain_walkable(t.x, t.y), "★ 生成的点位都可通行")
 
 
-## ★★ 城墙环：一张牌建整圈；被建筑 / 地形挡住的位置跳过；只扣一张牌的费。
+## ★★ 2026.11.19（用户口径）：城墙不再能建造 —— 只能由战役编辑器预先摆放。
 func _test_wall_ring(cfg) -> void:
 	var w = require_world(cfg)
 	if w == null:
 		return
-	var wall_anchors: Array = w.build_anchors_for("wall", "p1")
-	ok(not wall_anchors.is_empty(), "（前提）p1 有可以围墙的区划中心")
-	if wall_anchors.is_empty():
+	eq(w.build_anchors_for("wall", "p1").size(), 0,
+		"★★ 木墙没有建造锚点（局内不能建造）")
+	eq(w.build_anchors_for("stone_wall", "p1").size(), 0,
+		"★★ 石墙也没有建造锚点")
+	# 找一个己方区划中心（只用来验证「就算落点对也拒绝」）。
+	var center := Vector2i(-1, -1)
+	var zid := -1
+	for z in w.zones.zones:
+		if typeof(z) != TYPE_DICTIONARY:
+			continue
+		var zd: Dictionary = z
+		if String(zd.get("owner", "")) != "p1":
+			continue
+		var cv: Variant = zd.get("center", null)
+		if cv != null:
+			center = cv
+			zid = int(zd.get("id", -1))
+			break
+	ok(center.x >= 0 and zid >= 0, "（前提）p1 有区划中心")
+	if center.x < 0 or zid < 0:
 		return
-	var wa: Dictionary = wall_anchors[0]
-	var center: Vector2i = wa["tile"]
-	var zid := int(wa["zone_id"])
-	var ring_size: int = w.zones.wall_ring_tiles_of(zid).size()
-	ok(ring_size >= 3 and ring_size <= 8,
-		"（前提）几何城墙环最多 8 格（这张图这个中心在边上，实际 %d 格）" % ring_size)
-	# ★ 环上**属于己方**、能建的那几格才是这一张牌真正要建的位置。
-	#   （中心贴着区划边界时，环会有一部分落在邻区 —— 那些格子不是「自己的区划」，
-	#     按「只能在自己区划里建造」的既有规则跳过；这是数据形状，不是 bug。）
-	var owned_ring: Array = w.wall_ring_buildable_tiles(zid, "p1")
-	ok(not owned_ring.is_empty(), "（前提）环上至少有几格属于自己的区划")
-	if owned_ring.is_empty():
-		return
-	# 钱要够：整圈只扣**一张牌**的费。
 	w.resources["food"] = 10000.0
 	w.resources["gold"] = 10000.0
-
-	# 先占掉环上一格（用一栋哨塔），再把另一格改成山 —— 两种遮挡都要被跳过。
-	var occupied: Vector2i = owned_ring[0]
-	w.add_building("tower", occupied.x, occupied.y, "p1", true, true)
-	var mountain := Vector2i(-1, -1)
-	for t in owned_ring:
-		var tv: Vector2i = t
-		if tv == occupied:
-			continue
-		w.map.terrain.set_cell(tv.x, tv.y, "mountain")
-		mountain = tv
-		break
-	ok(mountain.x >= 0, "（前提）环上另有一格改成山脉")
-	var expected: Array = w.wall_ring_buildable_tiles(zid, "p1")
-	ok(expected.size() >= 1, "（前提）环上还剩能建的格子（实际 %d）" % expected.size())
-
-	var wall_cost: Dictionary = cfg.building_def("wall").get("cost", {})
-	var food_cost: float = float((wall_cost as Dictionary).get("food", 0.0))
 	var food_before := float(w.resources.get("food", 0.0))
-	var cmd := {"kind": "build", "build_type": "wall",
-		"tx": center.x, "ty": center.y, "zone_id": zid, "faction": "p1"}
-	ok(CommandRes.apply(w, cfg, cmd), "★★ 墙牌落在区划中心上被接受")
-	var built := 0
-	for t in expected:
-		var tv: Vector2i = t
-		var b = w.building_at(tv.x, tv.y)
-		if b != null and String(b.type) == "wall":
-			built += 1
-	eq(built, expected.size(), "★★ 一张牌把环上所有空位建满（跳过建筑与山脉）")
-	ok(w.building_at(occupied.x, occupied.y) != null
-			and String(w.building_at(occupied.x, occupied.y).type) == "tower",
-		"★★ 被建筑占住的位置保持原样（不在遮挡处重建）")
-	ok(w.building_at(mountain.x, mountain.y) == null,
-		"★★ 山脉那一格没有建墙")
-	near(float(w.resources.get("food", 0.0)), food_before - food_cost, 1e-3,
-		"★★ 整圈只扣**一张牌**的费用（%.0f）" % food_cost)
+	var wall_before := _wall_count(w)
+	for bt in ["wall", "stone_wall"]:
+		eq(w.build_reject_reason(String(bt), center.x, center.y, "p1"),
+			"wall_preplaced", "★★ %s 的建造拒因 = wall_preplaced" % bt)
+		ok(not CommandRes.apply(w, cfg, {
+			"kind": "build", "build_type": String(bt), "zone_id": zid,
+			"tx": center.x, "ty": center.y, "faction": "p1"}),
+			"★★ 即使是区划中心，也不能建 %s" % bt)
+		w.tick(0.01)
+	eq(_wall_count(w), wall_before, "★★ 两条墙命令都没建出任何墙")
+	near(float(w.resources.get("food", 0.0)), food_before, 0.5,
+		"★★ 被拒时没有扣钱（tick 的产出误差不计）")
 
-	# 环已经建满（剩下的位置全被挡住）：再建必须被拒，且不扣钱。
-	var food_after := float(w.resources.get("food", 0.0))
-	ok(not CommandRes.apply(w, cfg, cmd), "★★ 环上没有空位后不能再建墙")
-	eq(w.build_reject_reason("wall", center.x, center.y, "p1"), "wall_no_space",
-		"★★ 拒因 = wall_no_space")
-	near(float(w.resources.get("food", 0.0)), food_after, 1e-3, "★★ 被拒时不扣钱")
+	# 设计师预置仍然可行：直接 `add_building`（战役编辑器走同一条路）。
+	var ring: Array = w.wall_ring_buildable_tiles(zid, "p1")
+	ok(not ring.is_empty(), "（前提）区划中心周围还有位置可以放预置城墙")
+	if not ring.is_empty():
+		var t: Vector2i = ring[0]
+		ok(w.add_building("wall", t.x, t.y, "p1", true, true) != null,
+			"★★ 预置（非建造命令）仍然能放城墙")
+		eq(_wall_count(w), wall_before + 1, "★ 预置墙体真的出现在地图上")
 
-	# 城墙的落点必须是区划中心（普通点位 → not_zone_center）。
-	var tower_anchors: Array = w.build_anchors_for("tower", "p1")
-	if not tower_anchors.is_empty():
-		var pt: Vector2i = tower_anchors[0]["tile"]
-		eq(w.build_reject_reason("wall", pt.x, pt.y, "p1"), "not_zone_center",
-			"★★ 城墙不能建在普通点位上")
+
+func _wall_count(w) -> int:
+	var n := 0
+	for b in w.building_list:
+		if b != null and b.alive and String(b.type) == "wall":
+			n += 1
+	return n
 
 
 ## ★★ 界面拖牌用的锚点：只看**己方**、城墙看中心、普通建筑看空点位。
@@ -304,12 +287,9 @@ func _test_anchors(cfg) -> void:
 			"★ 普通锚点只在己方区划里")
 		ok(w.can_place_building("tower", t.x, t.y, "p1"), "★ 锚点当下确实能建")
 
-	var walls: Array = w.build_anchors_for("wall", "p1")
-	ok(not walls.is_empty(), "★ 城墙有锚点（区划中心）")
-	for a in walls:
-		var t: Vector2i = a["tile"]
-		ok(w.zone_center_zone_at(t.x, t.y) != null, "★ 城墙锚点都是区划中心")
-		ok(w.can_place_building("wall", t.x, t.y, "p1"), "★ 城墙锚点当下确实能建")
+	# ★★ 2026.11.19：城墙只能预置，没有运行时锚点 / 不能建造。
+	eq(w.build_anchors_for("wall", "p1").size(), 0, "★★ 城墙没有运行时锚点")
+	eq(w.build_anchors_for("stone_wall", "p1").size(), 0, "★★ 石墙也没有运行时锚点")
 
 	# 别的阵营拿不到 p1 的点位；中立区划不算。
 	var p2_pts: Array = w.build_anchors_for("tower", "p2")

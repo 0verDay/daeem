@@ -88,18 +88,12 @@ static func _pd(ai, key: String, t0: int) -> void:
 			+ (Time.get_ticks_usec() - t0)
 
 
-## 先尝试造一座塔；**只有塔这一 tick 没造出来**才允许碰墙。
+## ★★ 2026.11.19（用户口径）：城墙不再由 AI 建造（只能由战役编辑器预先摆放）。
+##   函数名保留（调用点 / 旧的诊断键 `build/tower_walls` 不变），实际只尝试造塔。
 static func _try_tower_then_walls(ai, memo: Variant = null) -> void:
 	var _p0 := _pt(ai)
-	var before := _tower_count(ai)
 	_try_tower(ai, memo)
-	_pd(ai, "build/tower", _p0)
-	if _tower_count(ai) > before:
-		return
-	# 塔位还在、只是钱不够：攒钱等塔，不拿这笔钱去造墙。
-	if _should_save_for_tower(ai, memo):
-		return
-	_try_wall_ring(ai, memo)
+	_pd(ai, "build/tower_walls", _p0)
 
 
 # ------------------------------------------------------------------
@@ -620,54 +614,19 @@ static func _should_save_for_tower(ai, memo: Variant = null) -> bool:
 	return not _defense_afford(ai, _tower_cost(ai))
 
 
-## 兼容入口（测试 / 旧调用）：只补区划中心的城墙环。
+## 兼容入口（测试 / 旧调用）：**现在什么都不做**。
 ##
-## ★★ 2026.11.15：**边境长墙已删除** —— 用户口径「木墙和石墙均不可随意建造，
-##   仅能建造在区划中心周围」。AI 与玩家走同一条规则（见 world.build_reject_reason）。
-static func _try_wall(ai) -> void:
-	_try_wall_ring(ai)
+## ★★ 2026.11.19（用户口径）：城墙只能由战役编辑器在地图数据里预先摆放，
+##   玩家和 AI 都不能建造。`command_processor.apply_build()` 与
+##   `world.build_reject_reason()` 也会拒绝任何墙类建造命令（理由 `wall_preplaced`）。
+##   ★ 保留这两个函数名只是为了让旧调用点 / 测试显式验证「AI 不再造墙」。
+static func _try_wall(_ai) -> void:
+	return
 
 
-## 给一个己方区划的中心补一圈城墙。
-##
-## ★ 一次 `apply_build` = **整圈**（和玩家拖一张墙牌完全同一条路径）：
-##   费用按一张牌算，被地形 / 建筑挡住的格子由 world 那侧跳过。
-static func _try_wall_ring(ai, memo: Variant = null) -> void:
-	var build_cfg: Dictionary = ai.profile.get("build", {})
-	if not bool(build_cfg.get("wall_enabled", true)):
-		return
-	var hard_max := int(build_cfg.get("wall_hard_max", 100))
-	if hard_max <= 0 or _wall_count(ai) >= hard_max:
-		return
-	var cost: Dictionary = {}
-	var def_v: Variant = ai.cfg.building_def("wall")
-	if typeof(def_v) == TYPE_DICTIONARY:
-		var cv: Variant = (def_v as Dictionary).get("cost", {})
-		if typeof(cv) == TYPE_DICTIONARY:
-			cost = cv
-	if not _defense_afford(ai, cost, build_cfg):
-		return
-	var zone = _pick_wall_zone(ai, memo)
-	if zone == null:
-		return
-	var zid := int((zone as Dictionary).get("id", -1))
-	var center: Variant = (zone as Dictionary).get("center", null)
-	if zid < 0 or center == null:
-		return
-	if ai.world.wall_ring_buildable_tiles(zid, ai.faction).is_empty():
-		return
-	var before := _wall_count(ai)
-	var c: Vector2i = center
-	if CommandRes.apply(ai.world, ai.cfg, {
-			"kind": "build", "build_type": "wall", "zone_id": zid,
-			"tx": c.x, "ty": c.y, "faction": ai.faction}):
-		var built: int = maxi(0, _wall_count(ai) - before)
-		ai.stats["builds"] = int(ai.stats.get("builds", 0)) + 1
-		ai.stats["walls_built"] = int(ai.stats.get("walls_built", 0)) + built
-		ai.note_status("building")
-	else:
-		ai.stats["build_failures"] = int(ai.stats.get("build_failures", 0)) + 1
-		ai.blocked_tiles[c] = true
+## ★★ 2026.11.19：AI 不再补城墙环（保留空实现，见 `_try_wall()`）。
+static func _try_wall_ring(_ai, _memo: Variant = null) -> void:
+	return
 
 
 static func _wall_count(ai) -> int:

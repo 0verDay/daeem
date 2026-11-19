@@ -110,8 +110,10 @@ func _test_layout_against_reference(cfg) -> void:
 	for i in 9:
 		var r := UiLayoutRes.card_fan_local(i, 9)
 		bottoms.append(r.position.y + r.size.y)
-	near(bottoms[0], bottoms[8], 1e-4, "★★ 九张牌的底边在同一条基线上")
-	near(bottoms[0], bottoms[4], 1e-4, "★★ 中间那张也没被抬高 / 压低")
+	# ★★ 2026.11.19：外圈下沉形成弧线，中间最低（y 最小）。
+	near(bottoms[0], bottoms[8], 1e-4, "★★ 九张牌左右两端对称")
+	near(bottoms[0] - bottoms[4], UiLayoutRes.CARD_FAN_ARC_PX, 1e-4,
+		"★★ 外圈牌比中间牌下沉 %.1fpx（弧线）" % UiLayoutRes.CARD_FAN_ARC_PX)
 	var rots: Array[float] = []
 	for i in 9:
 		rots.append(UiLayoutRes.card_fan_rotation(i, 9))
@@ -123,7 +125,7 @@ func _test_layout_against_reference(cfg) -> void:
 	ok(unique_rots, "★★ 九张牌逐张角度不同（不再被 clamp 成几档平行牌）")
 	near(rots[4], 0.0, 1e-5, "★ 扇形正中那张是正的")
 	near(absf(rots[0]), absf(rots[8]), 1e-5, "★ 左右两端的张角对称")
-	ok(absf(rots[0]) <= deg_to_rad(14.0) + 1e-5, "★ 外圈张角不超过 14°")
+	ok(absf(rots[0]) <= deg_to_rad(18.0) + 1e-5, "★ 外圈张角不超过 18°")
 	# 支点：牌底中点（旋转 / 缩放都绕这里，整排不会左右漂）。
 	var sample := UiLayoutRes.card_fan_local(2, 7)
 	eq(UiLayoutRes.card_pivot(sample.size), Vector2(sample.size.x * 0.5, sample.size.y),
@@ -603,7 +605,7 @@ func _test_panels(cfg) -> void:
 	_test_squad_rows(main)
 	_test_detail_visibility(main)
 	await _test_page_tabs_and_card(main, cfg)
-	_test_hover_panel(main, cfg)
+	await _test_hover_panel(main, cfg)
 	await _test_hover_tip_control(cfg)
 	await _test_panel_slide_in(main)
 	_test_card_keys(main)
@@ -613,6 +615,9 @@ func _test_panels(cfg) -> void:
 	_test_multi_recruit_distribution(main)
 	_test_zone_recruit_via_card(main)
 	_test_upgrade_via_card(main)
+	await _test_building_demolish(main)
+	await _test_card_rise_from_bottom(main)
+	await _test_selection_switch_no_deck_anim(main)
 	await _test_queue_control(cfg)
 	_test_queue_cancel_via_click(main)
 	_test_auto_select_on_recruit(main)
@@ -728,16 +733,30 @@ func _test_card_build_drag(main) -> void:
 	world.resources["food"] = 100000.0
 	world.resources["gold"] = 100000.0
 
+	# ★★ 2026.11.19（用户口径）：城墙只能由战役编辑器预先摆放 —— 建筑页里没有墙牌。
+	eq(world.build_anchors_for("wall", String(world.my_faction)).size(), 0,
+		"★★ 木墙没有运行时锚点")
+	var saw_wall := false
+	var saw_stone_wall := false
+	for e in card.entries():
+		if not (e as Dictionary).is_empty() and String((e as Dictionary).get("type", "")) == "build":
+			var bt := String((e as Dictionary).get("build_type", ""))
+			if bt == "wall":
+				saw_wall = true
+			elif bt == "stone_wall":
+				saw_stone_wall = true
+	ok(not saw_wall and not saw_stone_wall, "★★ 建筑页不再出现木墙 / 石墙")
+
 	# ★★ 2026.11.15 建造系统：拖起建筑牌 → 所有可落点高亮 → 拖到点位附近出现
 	#   圆形范围指示 → 在圈内松手 = 在那一点建造。
-	#   这一节用**城墙牌**走一遍（它的锚点是区划中心，一张牌建整圈）。
-	var wall_anchors: Array = world.build_anchors_for("wall", String(world.my_faction))
-	ok(not wall_anchors.is_empty(), "（前提）己方有可以围墙的区划中心")
-	if wall_anchors.is_empty():
+	#   现在第一张牌是**哨塔**（Q）。
+	var tower_anchors: Array = world.build_anchors_for("tower", String(world.my_faction))
+	ok(not tower_anchors.is_empty(), "（前提）有空着的建造点位建哨塔")
+	if tower_anchors.is_empty():
 		return
 	var anchor: Dictionary = {}
 	var screen_pos := Vector2.ZERO
-	for a in wall_anchors:
+	for a in tower_anchors:
 		var t: Vector2i = a["tile"]
 		var p: Vector2 = main.palette.to_px(Vector2(float(t.x) + 0.5, float(t.y) + 0.5))
 		if hud.point_hits_ui(p):
@@ -745,114 +764,76 @@ func _test_card_build_drag(main) -> void:
 		anchor = a
 		screen_pos = p
 		break
-	ok(not anchor.is_empty(), "（前提）找到一个不被 HUD 盖住的城墙锚点")
+	ok(not anchor.is_empty(), "（前提）找到一个不被 HUD 盖住的建造点位")
 	if anchor.is_empty():
 		return
-	var tile: Vector2i = anchor["tile"]
-	var walls_before := _count_buildings(world, "wall")
+	var point: Vector2i = anchor["tile"]
+	var point_px := screen_pos
 	var drag_start := screen_pos + Vector2(0.0, 24.0)
 	card._drag_index = 0
 	card._drag_start_global = drag_start
 	card._update_drag_position(0, screen_pos)
 	ok(hud.drag_build_active, "★★ 拖起建筑牌后进入建造预览")
-	ok(hud.drag_build_anchors.size() == wall_anchors.size(),
+	ok(hud.drag_build_anchors.size() == tower_anchors.size(),
 		"★★ 拖起那一刻算出所有可落点（%d 个）" % hud.drag_build_anchors.size())
-	eq(hud.drag_build_tile, tile, "★★ 指针在圆形范围里 → 吸附到该建造锚点")
+	eq(hud.drag_build_tile, point, "★★ 指针在圆形范围里 → 吸附到该建造锚点")
 	ok(hud.drag_build_anchor != null, "★★ 吸附到了一个锚点")
 	ok(card._drag_fade_tween != null and card._drag_fade_tween.is_running(),
 		"★★ 建筑牌上拖时启动淡出")
-	for _i in 20:
-		await process_frame
-	eq(card._drag_face_alpha, 0.3,
-		"★★ 建筑牌拖到地图上的透明度目标是 0.3（卡面自己就是卡牌虚影）")
-	ok(main.get_node_or_null("BuildCardGhost") == null
-			and main.get_node_or_null("WallRingGhost") == null,
-		"★★ 地图上没有任何建筑虚影节点（普通建筑 / 城墙圈都没有）")
-	ok(hud._card_build_anchor_valid(), "★★ 可建造的锚点判为绿色/有效")
-
-	# 拖到地图另一头：不吸附，但**虚影常驻**（城墙跟着最近的己方中心）。
-	var far_tile := Vector2(float(world.map.cols) - 1.5, float(world.map.rows) - 1.5)
-	var far_pos: Vector2 = main.palette.to_px(far_tile)
-	if hud.point_hits_ui(far_pos):
-		far_pos = main.palette.to_px(Vector2(1.5, 1.5))
-	card._update_drag_position(0, far_pos)
-	eq(hud.drag_build_tile, Vector2i(-1, -1), "★★ 离锚点太远 → 不吸附")
-	ok(main.get_node_or_null("WallRingGhost") == null,
-		"★★ 远离点位时也没有城墙虚影（卡牌还在手上）")
-	near(card.cell_at(0).modulate.a, 0.3, 0.02,
-		"★★ 卡牌虚影仍然可见")
-
-	# 回到锚点松手 ⇒ 整圈建上。
-	card._update_drag_position(0, screen_pos)
-	card._finish_card_drag(0, screen_pos)
-	ok(not hud.drag_build_active, "松手后结束建筑牌拖拽态")
-	ok(_count_buildings(world, "wall") > walls_before,
-		"★★ 在圆形范围内松手 → 真的在区划中心建起整圈城墙")
-
-	# ★ 非城墙建筑：拖到**建造点位**上松手 → 那一格多一栋；拖到非点位 → 不建。
-	var tower_anchors: Array = world.build_anchors_for("tower", String(world.my_faction))
-	ok(not tower_anchors.is_empty(), "（前提）还有空着的建造点位建哨塔")
-	if tower_anchors.is_empty():
-		return
-	# ★ 等上面那张城墙牌的「生效 → 淡回槽位」飞完，邻居的位置才算稳定（下面要当基准用）。
-	for _i in 24:
-		await process_frame
-	var ta: Dictionary = tower_anchors[0]
-	var point: Vector2i = ta["tile"]
-	var point_px: Vector2 = main.palette.to_px(Vector2(float(point.x) + 0.5, float(point.y) + 0.5))
 	# ★★ 2026.11.17：邻居的「原位」要在**拖起来之前**记 —— 拖起来之后其余牌会往下沉 + 缩小
 	#   （见 `_set_deck_tucked`），松手才浮回去；拿拖拽中的位置当基准会刚好相反。
-	var neigh0: Vector2 = card._cells[0].position
-	var neigh2: Vector2 = card._cells[2].position
-	card._drag_index = 1
-	card._drag_start_global = point_px + Vector2(0.0, 24.0)
-	card._update_drag_position(1, point_px)
+	var neigh_b: Vector2 = card._cells[1].position
+	var neigh_c: Vector2 = card._cells[3].position
 	# ★★ 2026.11.17（用户口径）：拖出某张牌时，**其余手牌往下沉 + 缩小到 0.82**
 	#   （动画 0.18s，所以先等它播完再断言）。
 	for _i in 20:
 		await process_frame
-	near(card._cells[0].scale.x, 0.82, 0.01, "★★ 拖出牌后其余手牌缩到 0.82 倍")
-	near(card._cells[2].scale.x, 0.82, 0.01, "★★ 左右两边的牌都缩小")
-	# ★ 「下移 40px」指的是**牌的视觉中心**往下 40px（支点是牌底中点，缩小会把牌心
-	#   往上抬一点，见 `UiLayoutRes.card_tuck_offset` / `card_visual_center`）。
-	var cell0: Button = card._cells[0]
-	var c0: Vector2 = UiLayoutRes.card_visual_center(cell0.position, cell0.size,
-		cell0.scale.x)
-	var base_c0: Vector2 = UiLayoutRes.card_visual_center(neigh0, cell0.size, 1.0)
-	near(c0.y, base_c0.y + 40.0, 2.0,
-		"★★ 而且整体往下沉 40px（牌心：%.1f → %.1f）" % [base_c0.y, c0.y])
-	near(c0.x, base_c0.x, 2.0, "★ 只往下沉，不左右挪")
-	eq(card._cells[1].scale.x, 1.0, "★ 被拖的那张自己**不参与**下沉")
+	near(card._cells[1].scale.x, UiLayoutRes.CARD_TUCK_SCALE, 0.01,
+		"★★ 拖出牌后其余手牌缩到 %.2f 倍" % UiLayoutRes.CARD_TUCK_SCALE)
+	near(card._cells[3].scale.x, UiLayoutRes.CARD_TUCK_SCALE, 0.01,
+		"★★ 其它可见牌也缩小")
+	var cell_b: Button = card._cells[1]
+	var cb: Vector2 = UiLayoutRes.card_visual_center(cell_b.position, cell_b.size,
+		cell_b.scale.x)
+	var base_cb: Vector2 = UiLayoutRes.card_visual_center(neigh_b, cell_b.size, 1.0)
+	near(cb.y, base_cb.y + UiLayoutRes.CARD_TUCK_PX, 2.0,
+		"★★ 而且整体往下沉 %.0fpx（牌心：%.1f → %.1f）"
+			% [UiLayoutRes.CARD_TUCK_PX, base_cb.y, cb.y])
+	near(cb.x, base_cb.x, 2.0, "★ 只往下沉，不左右挪")
+	near(card._cells[0].scale.x, 1.0, 0.01,
+		"★ 被拖的那张自己**不参与**下沉")
 	eq(card._drag_face_alpha, 0.3, "★★ 建筑牌的卡面透明度目标是 0.3")
 	eq(hud.drag_build_tile, point, "★★ 哨塔牌吸附到建造点位")
 	ok(main.get_node_or_null("BuildCardGhost") == null,
 		"★★ 哨塔没有 3D 建筑虚影（只保留卡牌虚影）")
+
 	# 拖到一张「不是点位」的地图格：卡牌虚影仍然跟着指针，但不再吸附。
 	var probe_tile := _find_off_tile(main, hud, world, "tower")
 	var probe_px: Vector2 = main.palette.to_px(
 		Vector2(float(probe_tile.x) + 0.5, float(probe_tile.y) + 0.5))
-	card._update_drag_position(1, probe_px)
+	card._update_drag_position(0, probe_px)
 	eq(card._drag_face_alpha, 0.3, "★★ 非点位时卡面透明度目标仍是 0.3")
 	eq(hud.drag_build_tile, Vector2i(-1, -1), "（前提）非点位不吸附")
 	ok(main.get_node_or_null("BuildCardGhost") == null, "★★ 非点位也没有建筑虚影")
-	card._update_drag_position(1, point_px)
-	card._finish_card_drag(1, point_px)
+	card._update_drag_position(0, point_px)
+	card._finish_card_drag(0, point_px)
+	ok(not hud.drag_build_active, "松手后结束建筑牌拖拽态")
 	ok(world.building_at(point.x, point.y) != null,
 		"★★ 在建造点位上松手 → 真的建出哨塔")
-	for _i in 120:
+	for _i in 240:
 		await process_frame
 		var s_done: bool = card._success_tween == null or not card._success_tween.is_running()
 		var r_done: bool = card._restore_tween == null or not card._restore_tween.is_running()
 		if s_done and r_done:
 			break
-	v2_near(card._cells[0].position, neigh0, 1.0,
+	v2_near(card._cells[1].position, neigh_b, 1.0,
 		"★★ 建筑牌生效后**不重排其他牌**（左邻没动）")
-	v2_near(card._cells[2].position, neigh2, 1.0,
-		"★★ 建筑牌生效后**不重排其他牌**（右邻没动）")
+	v2_near(card._cells[3].position, neigh_c, 1.0,
+		"★★ 建筑牌生效后**不重排其他牌**（另一张也没动）")
 	# ★★ 2026.11.17：松手（生效）之后，其余牌反向浮回原位、尺寸回到 1.0。
-	near(card._cells[0].scale.x, 1.0, 0.01, "★★ 生效后其余手牌浮回原尺寸")
-	near(card._cells[2].scale.x, 1.0, 0.01, "★★ 浮回时两张都复位")
-	v2_near(card._card_faces[1].position, card._cells[1].position, 0.5,
+	near(card._cells[1].scale.x, 1.0, 0.01, "★★ 生效后其余手牌浮回原尺寸")
+	near(card._cells[3].scale.x, 1.0, 0.01, "★★ 浮回时两张都复位")
+	v2_near(card._card_faces[0].position, card._cells[0].position, 0.5,
 		"★★ 生效后卡面与按钮同位置（不会留下第二张 / 重影）")
 	ok(card._success_tween == null or not card._success_tween.is_running(),
 		"★★ 生效动画已收尾（不会和淡回动画抢同一张牌）")
@@ -870,47 +851,47 @@ func _test_card_build_drag(main) -> void:
 	if built_tower != null:
 		ok(not built_tower.is_under_construction(), "（前提）它已经建完")
 		var lv_before: int = int(built_tower.level)
-		card._drag_index = 1
+		card._drag_index = 0
 		card._drag_start_global = point_px + Vector2(0.0, 24.0)
-		card._update_drag_position(1, point_px)
+		card._update_drag_position(0, point_px)
 		ok(hud.drag_build_upgrade == built_tower,
 			"★★ 拖到同种建筑上 → 吸附成**升级目标**")
 		eq(hud.drag_build_tile, point, "★★ 吸附到那栋建筑所在的格")
 		ok(hud.drag_build_anchor == null, "★ 这时不再是「建造锚点」")
 		ok(hud.drag_anchor_ok, "★★ 升级目标判为有效（钱够、没满级）")
-		card._finish_card_drag(1, point_px)
+		card._finish_card_drag(0, point_px)
 		# 模拟「牌回手途中指针正好压在它上面」：不能把悬停的 1.5 倍留在牌上。
-		card._raise_card(1, true)
+		card._raise_card(0, true)
 		eq(int(built_tower.level), lv_before + 1,
 			"★★ 松手 = 当场升一级（没有读条）")
 		ok(not built_tower.is_upgrading(), "★★ 不会停在「升级中」")
 		# ★★ 2026.11.17 回归：升级后牌回到手牌必须恢复 1.0 倍，不能留着悬停的 1.5 倍。
-		for _i2 in 120:
+		for _i2 in 240:
 			await process_frame
 			var s_done2: bool = card._success_tween == null or not card._success_tween.is_running()
 			var r_done2: bool = card._restore_tween == null or not card._restore_tween.is_running()
 			if s_done2 and r_done2:
 				break
-		v2_near(card._cells[1].scale, Vector2.ONE, 1e-3,
+		v2_near(card._cells[0].scale, Vector2.ONE, 1e-3,
 			"★★ 升级牌回手后按钮缩放 = 1.0")
-		v2_near(card._card_faces[1].scale, Vector2.ONE, 1e-3,
+		v2_near(card._card_faces[0].scale, Vector2.ONE, 1e-3,
 			"★★ 升级牌回手后卡面缩放 = 1.0")
 		# ★★ 2026.11.18：取消 / 拒绝回手时，缩放要随离槽位的距离渐收，不能一帧硬切。
-		card._cells[1].scale = Vector2(1.5, 1.5)
-		card._card_faces[1].scale = Vector2(1.5, 1.5)
-		card._animate_card_back(1)
-		var s_start: float = card._cells[1].scale.x
+		card._cells[0].scale = Vector2(1.5, 1.5)
+		card._card_faces[0].scale = Vector2(1.5, 1.5)
+		card._animate_card_back(0)
+		var s_start: float = card._cells[0].scale.x
 		ok(s_start > 1.4, "★★ 回手开始时保留松手时的缩放（%.3f）" % s_start)
 		for _i3 in 3:
 			await process_frame
-		var s_mid: float = card._cells[1].scale.x
+		var s_mid: float = card._cells[0].scale.x
 		ok(s_mid < s_start - 0.02 and s_mid > 1.001,
 			"★★ 回手途中随距离缓慢缩小（%.3f → %.3f）" % [s_start, s_mid])
-		for _i4 in 40:
+		for _i4 in 60:
 			await process_frame
 			if card._drag_tween == null or not card._drag_tween.is_running():
 				break
-		v2_near(card._cells[1].scale, Vector2.ONE, 1e-3,
+		v2_near(card._cells[0].scale, Vector2.ONE, 1e-3,
 			"★★ 回手到槽位时缩放正好收回到 1.0")
 		# ★★ 2026.11.18：返程落位后支点必须回到「牌底中点」——
 		#   旧版这里会留下牌心支点，下一次重新摆牌时这张牌就比别的牌歪半张。
@@ -938,35 +919,31 @@ func _test_card_build_drag(main) -> void:
 		if not tower_anchors2.is_empty():
 			var p3: Vector2 = main.palette.to_px(Vector2(float(off_tile.x) + 0.5,
 				float(off_tile.y) + 0.5))
-			card._drag_index = 1
+			card._drag_index = 0
 			card._drag_start_global = p3 + Vector2(0.0, 24.0)
-			card._update_drag_position(1, p3)
+			card._update_drag_position(0, p3)
 			eq(hud.drag_build_tile, Vector2i(-1, -1),
 				"★★ 非建造点位不吸附（哪怕它在己方区划里）")
-			card._finish_card_drag(1, p3)
+			card._finish_card_drag(0, p3)
 			ok(world.building_at(off_tile.x, off_tile.y) == null,
 				"★★ 在非建造点位上松手 → 什么都不建")
 			# ★★ 2026.11.15：被拒绝的牌必须**精确**回到它自己的扇形槽位，
 			#   且不能留下第二张同名卡（重影 / 错位回归）。
-			for _i in 120:
+			for _i in 240:
 				await process_frame
 				if card._returning_index < 0:
 					break
-			var ord := 0
-			var count := 0
-			for j in card._entries.size():
-				if not (card._entries[j] as Dictionary).is_empty():
-					count += 1
-					if j < 1:
-						ord += 1
-			var fan: Rect2 = UiLayoutRes.card_fan_local(ord, count)
-			v2_near(card._cells[1].position, fan.position, 1.0,
-				"★★ 被拒绝的牌回到槽位（不会停在飞行途中）")
-			v2_near(card._card_faces[1].position, fan.position, 1.0,
-				"★★ 卡面和按钮同一位置（不会重影）")
+			var slot: Dictionary = card._fan_slot_of(0)
+			ok(not slot.is_empty(), "（前提）被拒的牌还有槽位")
+			if not slot.is_empty():
+				var fan: Rect2 = slot["rect"]
+				v2_near(card._cells[0].position, fan.position, 1.0,
+					"★★ 被拒绝的牌回到槽位（不会停在飞行途中）")
+				v2_near(card._card_faces[0].position, fan.position, 1.0,
+					"★★ 卡面和按钮同一位置（不会重影）")
 			var same_name := 0
 			for j in card._cells.size():
-				if card._cells[j].visible and card.cell_label(j) == card.cell_label(1):
+				if card._cells[j].visible and card.cell_label(j) == card.cell_label(0):
 					same_name += 1
 			eq(same_name, 1, "★★ 手牌里这张牌只有一张（没有重新创建一张相同的）")
 
@@ -2178,23 +2155,29 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 	eq(tabs.page_id_at(1), PageTabsRes.PAGE_GENERAL, "★★ 第二颗是「将领」（本轮新增）")
 	eq(tabs.page_id_at(2), PageTabsRes.PAGE_TECH, "★ 第三颗是「科技」")
 	eq(tabs.page(), PageTabsRes.PAGE_BUILD, "★ 默认停在「建筑」页")
-	eq(card.entries().size(), 9, "★ 建筑页是 3×3 九格（按行解锁后有空槽）")
-	eq(String(card.entry_at(0).get("build_type", "")), "wall", "建筑页第 1 格是木墙")
-	eq(String(card.entry_at(1).get("build_type", "")), "tower", "建筑页第 2 格是哨塔")
-	eq(String(card.entry_at(3).get("build_type", "")), "stone_wall", "★★ 第二行第 1 格是石墙")
-	eq(String(card.entry_at(4).get("build_type", "")), "watch_tower", "★★ 第二行第 2 格是警戒塔")
-	eq(card.cell_label(0), "木墙", "木墙在 Q 格")
-	eq(card.cell_label(1), "哨塔", "哨塔在 W 格")
-	eq(card.cell_label(3), "石墙", "★★ 石墙在第二行第 1 格（A）")
-	eq(card.cell_label(4), "警戒塔", "★★ 警戒塔在第二行第 2 格（S）")
+	# ★★ 2026.11.19（用户口径）：建筑页不再有木墙 / 石墙。
+	eq(card.entries().size(), 9, "★ 建筑页仍占 3×3 九格（按行解锁后有空槽）")
+	eq(String(card.entry_at(0).get("build_type", "")), "tower", "建筑页第 1 格是哨塔")
+	eq(String(card.entry_at(1).get("build_type", "")), "farm", "建筑页第 2 格是粮田")
+	eq(String(card.entry_at(3).get("build_type", "")), "watch_tower", "★★ 第二行第 1 格是警戒塔")
+	eq(String(card.entry_at(4).get("build_type", "")), "house", "★★ 第二行第 2 格是房屋")
+	eq(card.cell_label(0), "哨塔", "哨塔在 Q 格")
+	eq(card.cell_label(1), "粮田", "粮田在 W 格")
+	eq(card.cell_label(3), "警戒塔", "★★ 警戒塔在第二行第 1 格（A）")
+	eq(card.cell_label(4), "房屋", "★★ 房屋在第二行第 2 格（S）")
 	eq(String(card.entry_at(6).get("build_type", "")), "",
-		"★★ 第三行第 1 格空着（矿脉已右移）")
+		"★★ 第三行第 1 格空着（矿脉仍在最右）")
 	eq(String(card.entry_at(8).get("build_type", "")), "mine",
 		"★★ 矿脉在第三行最右侧（C 格）")
 	eq(card.cell_label(8), "矿脉", "★ 第三行最右格写着「矿脉」")
-	ok(bool(card.entry_at(0).get("ready", false)), "木墙 1 级就能建")
-	ok(not bool(card.entry_at(3).get("ready", true)), "★★ 石墙 1 级时置灰")
-	ok(not bool(card.entry_at(4).get("ready", true)), "★★ 警戒塔 1 级时置灰")
+	ok(bool(card.entry_at(0).get("ready", false)), "哨塔 1 级就能建")
+	ok(not bool(card.entry_at(3).get("ready", true)), "★★ 警戒塔 1 级时置灰")
+	for e in card.entries():
+		if (e as Dictionary).is_empty():
+			continue
+		ok(String((e as Dictionary).get("build_type", "")) != "wall"
+				and String((e as Dictionary).get("build_type", "")) != "stone_wall",
+			"★★ 建筑页没有墙牌（实际：%s）" % String((e as Dictionary).get("build_type", "")))
 	ok(not main.hud.tech_grid.visible, "★ 不是科技页时九格收起来（命令卡照常画）")
 
 	# 动态页签改为固定尺寸的纵向牌签；单页时靠右对齐，不拉伸占满整列。
@@ -2220,11 +2203,14 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 	if plain_b != null:
 		main.input_ctrl.select_building(plain_b)
 		main.hud.refresh()
-		ok(not tabs.visible, "★★ 选中无操作的建筑（木墙）→ 右下角整块隐藏")
-		eq(tabs.page_count(), 0, "★ 页签一颗都不留（不是空页签）")
-		eq(tabs.page(), "", "★ 当前页被清空")
-		ok(not card.visible, "★★ 命令卡也隐藏")
-		eq(card.entries().size(), 0, "★ 命令卡为空")
+		ok(tabs.visible, "★★ 选中己方普通建筑（木墙）→ 右下角有「操作」页")
+		eq(tabs.page_count(), 1, "★ 只有一颗「操作」页签")
+		eq(tabs.page(), PageTabsRes.PAGE_ORDER, "★ 当前页是「操作」")
+		ok(card.visible, "★★ 命令卡可见")
+		eq(card.entries().size(), 1, "★ 操作页只有一格")
+		eq(String(card.entry_at(0).get("type", "")), "building_demolish",
+			"★★ 那一格是「拆除」牌（2026.11.19 新增）")
+		eq(card.cell_label(0), "拆除", "★ 格子上写着「拆除」")
 
 	var tower_b = _ensure_own_building(world, "tower")
 	ok(tower_b != null, "（前提）拿得到己方哨塔")
@@ -2232,19 +2218,20 @@ func _test_page_tabs_and_card(main, cfg) -> void:
 		eq(tower_b.type, "tower", "（前提）第 2 栋是哨塔")
 		main.input_ctrl.select_building(tower_b)
 		main.hud.refresh()
-		ok(not tabs.visible, "★★ 哨塔同样没有可操作项 → 右下角整块隐藏")
-		eq(tabs.page_count(), 0, "★ 哨塔也不留空格子")
-		ok(not card.visible, "★★ 哨塔的命令卡也隐藏")
-		eq(card.entries().size(), 0, "★ 哨塔的命令卡为空")
+		ok(tabs.visible, "★★ 哨塔同样有「操作」页")
+		eq(tabs.page_count(), 1, "★ 哨塔也只有一颗页签")
+		ok(card.visible, "★★ 哨塔的命令卡可见")
+		eq(card.entries().size(), 1, "★ 哨塔的操作页只有拆除一格")
+		eq(String(card.entry_at(0).get("type", "")), "building_demolish",
+			"★★ 那一格同样是「拆除」牌")
 
-	# ★★ 「无操作」判据覆盖所有非大本营 / 非区划中心的建筑类型：
-	#    资源建筑（粮田 / 房屋 / 矿脉）与防御建筑走同一条路。
+	# ★★ 2026.11.19：所有己方建筑（大本营 / 区划中心除外）都有操作项 = 拆除。
 	#    这里只验判据，不必为了 UI 断言再在地图上铺五栋楼（会干扰后面的用例）。
 	var probe = BuildingRes.new()
 	for t in ["wall", "tower", "stone_wall", "watch_tower", "farm", "house", "mine"]:
 		probe.type = t
-		ok(not main.hud._building_has_actions(probe),
-			"★★ 「%s」没有可操作项 → 选中它时页签应隐藏" % t)
+		ok(main.hud._building_has_actions(probe),
+			"★★ 「%s」有可操作项 → 选中它时显示「拆除」页" % t)
 	probe.type = BuildingRes.TYPE_ZONE_CENTER
 	ok(main.hud._building_has_actions(probe), "★ 区划中心有操作项（招募页）")
 
@@ -2451,15 +2438,16 @@ func _test_hover_panel(main, cfg) -> void:
 	tabs.select_page(PageTabsRes.PAGE_BUILD)
 	card.hover(0)
 	ok(tip.showing(), "★ 鼠标停在命令卡某一格上 → 左下角栏换成悬停说明")
-	eq(tip.title_text(), "木墙", "左上角那一行是这一格的名字")
+	eq(tip.title_text(), "哨塔", "左上角那一行是这一格的名字")
 	# ★★ 2026.11.16 第二轮（用户口径）：「排版改成像选中建筑/单位时那种**有分隔的**排版」
 	#   ⇒ 副标题（卡种/兵种）+ 造价格 + 特性小标题 + 胶囊，各有各的块。
 	eq(tip.subtitle_text(), "建筑", "★ 副标题写卡种（建筑）")
-	eq(tip.cell_count(), 1, "★ 造价那一排格子（木墙只花粮食 ⇒ 1 格）")
+	eq(tip.cell_count(), 1, "★ 造价那一排格子（哨塔只花粮食 ⇒ 1 格）")
 	eq(tip.cell_label(0), "粮食", "★ 格子标签（与详情牌的「编制 / 血量」同款）")
-	eq(tip.cell_value(0), "50", "★ 格子数值")
+	eq(tip.cell_value(0), "100", "★ 格子数值")
 	eq(tip.caption_text(), "特性", "★ 小标题（特性）")
 	eq(tip.chips(), ["远程免伤+"], "★★ 特性胶囊（实际：%s）" % str(tip.chips()))
+	eq(tip.paragraph_text(), "", "★ 建筑悬停没有说明段落（版式与以前一致）")
 	var bt: String = tip.body_text()
 	for gone in ["血量", "攻击", "占格", "地块"]:
 		ok(not bt.contains(gone), "★ 不再写「%s」（实际：%s）" % [gone, bt])
@@ -2472,7 +2460,7 @@ func _test_hover_panel(main, cfg) -> void:
 	card.hover(0)
 	card.hover(1)          # 新的一格先到
 	card.unhover(0)        # 迟到的旧 exit
-	ok(tip.showing() and tip.title_text() == "哨塔",
+	ok(tip.showing() and tip.title_text() == "粮田",
 		"★ 迟到的 mouse_exited 不会把新面板收掉（实际：%s）" % tip.title_text())
 	card.unhover(1)
 	ok(not tip.showing(), "（收尾）面板收起来")
@@ -2500,6 +2488,10 @@ func _test_hover_panel(main, cfg) -> void:
 	eq(tip.cell_count(), 0, "★★ 科技不再持续耗金：悬停没有「金/秒」那一格")
 	eq(tip.caption_text(), "效果", "★ 小标题（效果）")
 	eq(tip.chips(), ["粮食产能 +10%"], "★★ 效果胶囊（实际：%s）" % str(tip.chips()))
+	# ★★ 2026.11.19（用户口径）：「科技卡牌悬停的文本丢失了，补一下」——
+	#   上一版重排版把 `desc` 那一整段丢了，只剩短效果。现在它走说明段落（body）。
+	eq(tip.paragraph_text(), "玩家总体粮食产能 +10%",
+		"★★ 科技悬停补回说明段落（desc）")
 	for gone in ["未启用", "名额", "阶"]:
 		ok(not tip.body_text().contains(gone),
 			"★ 状态那些字不再进悬停（实际：%s）" % tip.body_text())
@@ -2808,10 +2800,10 @@ func _test_card_keys(main) -> void:
 	# ★★ 建筑页的图标：每格带一张蒙版（从 .glb 抽边线烘出来的等轴测线稿），
 	#   且**名字那一行照旧显示**（需求：「图标 + 一行名字，描述进悬停面板」）。
 	ok(card.cell_icon_path(0) != "", "★ 建筑页第 1 格有图标蒙版")
-	ok(card.cell_icon_path(0).ends_with("building_wall.png"),
-		"★ 木墙用的就是 building_wall.png")
+	ok(card.cell_icon_path(0).ends_with("building_tower.png"),
+		"★ 哨塔用的就是 building_tower.png")
 	ok(card.cell_label_visible(0), "★ 建筑页有图标的格子仍然显示名字")
-	eq(card.cell_label(0), "木墙", "★ 木墙那格名字照旧")
+	eq(card.cell_label(0), "哨塔", "★ 哨塔那格名字照旧")
 
 	# ★★ 2026.10.30：建筑的单独字母快捷键已移除，只认九宫格键位。
 	ok(not main.cfg.building_def("wall").has("hotkey"),
@@ -2820,17 +2812,17 @@ func _test_card_keys(main) -> void:
 	ok(not main.input_ctrl.handle_key(_key(KEY_M)), "★ 按 M 不再进入矿脉建造模式")
 
 	var a_ev := _key(KEY_A)
-	ok(not card.handle_key(a_ev), "未解锁的 A 格（石墙）不消费按键")
+	ok(not card.handle_key(a_ev), "未解锁的 A 格（警戒塔）不消费按键")
 
 	# ★★ 2026.11.15：**点选建造已删除** —— 按 Q / 点建筑格都不会进入任何建造状态，
 	#   建筑只能靠「把手牌拖到地图上的建造点位」来放。
 	ok(card.handle_key(_key(KEY_Q)), "建筑页的 Q 仍被命令卡吃掉（不落到别的绑定上）")
 	eq(main.hud.drag_build_active, false, "★★ 按 Q 不会开始建造拖拽")
 	main.hud.refresh()
-	var wall_cell: Button = card.cell_at(0)
-	ok(not FillButtonRes.is_latched(wall_cell),
+	var build_cell: Button = card.cell_at(0)
+	ok(not FillButtonRes.is_latched(build_cell),
 		"★★ 建筑格不再有「选中」状态（点选建造已删除）")
-	ok(not FillButtonRes.click_flash_enabled(wall_cell),
+	ok(not FillButtonRes.click_flash_enabled(build_cell),
 		"★★ 建造格不参与点击闪光")
 	ok(card.handle_key(_key(KEY_W)), "建筑页的 W 仍被命令卡吃掉")
 	eq(main.hud.drag_build_active, false, "★★ 按 W 也不会开始建造拖拽")
@@ -3262,6 +3254,129 @@ func _test_upgrade_via_card(main) -> void:
 			world.cancel_building_upgrade(b.tx, b.ty)
 	main.input_ctrl.select_units([])
 	main.hud.refresh()
+
+## ★★ 2026.11.19：操作页「拆除」牌 —— 键盘 / 点击不生效，必须**拖到地图上松手**。
+func _test_building_demolish(main) -> void:
+	var world = main.world
+	var hud = main.hud
+	var card = hud.command_card
+	# 现造一栋专用的木墙（不碰其它用例依赖的建筑；拆掉后环境恢复原状）。
+	var target = null
+	var tile := Vector2i(-1, -1)
+	for y in world.map.rows:
+		for x in world.map.cols:
+			if not world.can_build_at(x, y):
+				continue
+			target = world.add_building("wall", x, y, world.my_faction, true, true)
+			if target != null:
+				tile = Vector2i(x, y)
+				break
+		if target != null:
+			break
+	ok(target != null, "（前提）现造一栋己方木墙用于拆除")
+	if target == null:
+		return
+	main.input_ctrl.select_building(target)
+	hud.refresh()
+	eq(String(card.entry_at(0).get("type", "")), "building_demolish",
+		"★★ 操作页第一格是「拆除」牌")
+	eq(card.cell_label(0), "拆除", "★ 格子上写着「拆除」（实际：%s）"
+		% card.cell_label(0))
+	# ① 键盘 / 点击路径不能拆（用户口径：必须拖拽）。
+	card.activate_index(0)
+	ok(target.alive, "★★ 直接激活拆除格**不会**拆（只给提示）")
+	ok(world.building_at(tile.x, tile.y) != null, "★★ 建筑还在")
+	# ② 拖到地图上松手 = 拆除。
+	var release := Vector2(root.size.x * 0.5, root.size.y * 0.3)
+	if hud.point_hits_ui(release):
+		release = Vector2(root.size.x * 0.15, root.size.y * 0.2)
+	var drag_start := release + Vector2(0.0, 24.0)
+	card._drag_index = 0
+	card._drag_start_global = drag_start
+	card._update_drag_position(0, release)
+	ok(card._dragging_card, "（前提）拆除牌已被拖起")
+	card._finish_card_drag(0, release)
+	ok(not target.alive, "★★ 拖到地图上松手 → 木墙被拆除")
+	ok(world.building_at(tile.x, tile.y) == null, "★★ 那一格空出来了")
+	for _i in 4:
+		await process_frame
+	main.input_ctrl.drop_dead_selection()
+	hud.refresh()
+
+
+## ★★ 2026.11.19（用户口径）：牌被打出后，新卡从**屏幕下方**以正常大小升入手牌位。
+func _test_card_rise_from_bottom(main) -> void:
+	var hud = main.hud
+	var card = hud.command_card
+	main.input_ctrl.select_units([])
+	hud.refresh()
+	hud.page_tabs.select_page(PageTabsRes.PAGE_BUILD)
+	hud.refresh()
+	var idx := -1
+	for j in card._cells.size():
+		if card._cells[j].visible:
+			idx = j
+			break
+	ok(idx >= 0, "（前提）建筑页至少有一张牌")
+	if idx < 0:
+		return
+	var slot: Dictionary = card._fan_slot_of(idx)
+	ok(not slot.is_empty(), "（前提）拿得到这张牌的槽位")
+	if slot.is_empty():
+		return
+	var r: Rect2 = slot["rect"]
+	card._restore_card_at_slot(idx)
+	ok(card._cells[idx].position.y >= UiLayoutRes.CARD_RECT.size.y,
+		"★★ 新卡从屏幕下方生成（起点 y=%.1f ≥ 牌区高度 %.1f）"
+			% [card._cells[idx].position.y, UiLayoutRes.CARD_RECT.size.y])
+	near(card._cells[idx].scale.x, 1.0, 1e-4, "★★ 生成时就是正常大小（不做缩放突变）")
+	for _i in 240:
+		await process_frame
+		if card._restore_tween == null or not card._restore_tween.is_running():
+			break
+	v2_near(card._cells[idx].position, r.position, 1.0,
+		"★★ 升到自己的手牌槽位后停住")
+	near(card._cells[idx].scale.x, 1.0, 1e-4, "★ 落位后仍是正常大小")
+	card._hover_suppressed_index = -1
+
+
+## ★★ 2026.11.19（用户报告）：切换选中到另一类「页签 / 手牌不同」的对象时，
+##   不应播「新牌从牌堆抽出」的入场动效；只有玩家自己切页才播。
+func _test_selection_switch_no_deck_anim(main) -> void:
+	var hud = main.hud
+	var card = hud.command_card
+	var base = main.world.find_base_of("p1")
+	var g1 = main.world.unit_by_id("general-1")
+	if base == null or g1 == null:
+		ok(false, "（前提）大本营 / 将领存在")
+		return
+	# 先等上一次可能的入场动画收尾，避免把旧 Tween 当成新触发的。
+	for _i in 120:
+		await process_frame
+		if card._deck_tween == null or not card._deck_tween.is_running():
+			break
+	# 建筑 → 部队（页签从「操作 / 科技」换到「单位」）
+	main.input_ctrl.select_building(base)
+	hud.refresh()
+	main.input_ctrl.select_units([g1])
+	hud.refresh()
+	ok(card._deck_tween == null or not card._deck_tween.is_running(),
+		"★★ 换选中（建筑 → 部队）不播手牌入场动效")
+	# 部队 → 建筑（页签从「单位」换到「操作 / 科技」）
+	main.input_ctrl.select_building(base)
+	hud.refresh()
+	ok(card._deck_tween == null or not card._deck_tween.is_running(),
+		"★★ 换选中（部队 → 建筑）也不播手牌入场动效")
+	# 玩家手动切页仍然保留入场动效（在大本营的「科技 → 操作」之间切）。
+	hud.page_tabs.select_page(PageTabsRes.PAGE_TECH)
+	hud.page_tabs.select_page(PageTabsRes.PAGE_ORDER)
+	ok(card._deck_tween != null and card._deck_tween.is_running(),
+		"★ 玩家自己切页仍然播入场动效")
+	for _i2 in 120:
+		await process_frame
+		if card._deck_tween == null or not card._deck_tween.is_running():
+			break
+
 
 ## ★★ 2026.11.14：招募即时化 ⇒ 点招募格 = **当场出兵**，五格面板（队列 / 取消 / 退款）
 ## 这一整套已经没有内容可显示。这个用例改成验「点一下就出人、面板不再出现」。

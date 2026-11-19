@@ -869,18 +869,21 @@ func _test_build_card(cfg) -> void:
 	# ① 教会军：通用建筑**一个都不少**，教堂是额外那一格
 	var church_entry := _slot_of(church_slots, "church")
 	ok(not church_entry.is_empty(), "★★ 教会军的建筑页里有教堂")
-	for bid in ["wall", "tower", "farm", "stone_wall", "watch_tower", "house", "mine"]:
+	for bid in ["tower", "farm", "watch_tower", "house", "mine"]:
 		ok(not _slot_of(church_slots, bid).is_empty(),
 			"★★ 教会军的建筑页里仍有 %s（额外建筑 ≠ 唯一建筑）" % bid)
+	# ★★ 2026.11.19：城墙只能由战役编辑器预置 ⇒ 建筑页不再有墙牌。
+	for bid in ["wall", "stone_wall"]:
+		ok(_slot_of(church_slots, bid).is_empty(),
+			"★★ 教会军的建筑页里没有 %s（城墙改为预置）" % bid)
 	# ② 教堂开局就能造：1 级大本营，ready = true
 	eq(int(church_entry.get("min_base", 0)), 1, "★★ 教堂的解锁等级 = 1")
 	ok(bool(church_entry.get("ready", false)), "★★ 1 级大本营时教堂牌是可点的")
 	# ③ 义勇军：没有教堂这一格
 	ok(_slot_of(vol_slots, "church").is_empty(), "★★ 义勇军的建筑页里没有教堂")
-	for bid in ["wall", "farm", "mine"]:
+	for bid in ["farm", "mine"]:
 		ok(not _slot_of(vol_slots, bid).is_empty(), "★ 义勇军照旧能造 %s" % bid)
-	# ④ 老建筑仍按行号解锁（教堂是唯一的例外）
-	var sw := _slot_of(vol_slots, "stone_wall")
-	if not sw.is_empty():
-		eq(int(sw.get("min_base", 0)), 2, "★ 石墙仍是 2 级解锁")
-		ok(not bool(sw.get("ready", true)), "★ 1 级大本营时石墙牌还是灰的")
+	# ④ 城墙不再出现在建筑页（只能由战役编辑器预置）。
+	for bid in ["wall", "stone_wall"]:
+		ok(_slot_of(vol_slots, bid).is_empty(),
+			"★★ 义勇军的建筑页里没有 %s（城墙改为预置）" % bid)

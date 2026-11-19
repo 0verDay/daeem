@@ -4,7 +4,8 @@
 
     · `tech.max_active` / `tech.gold_per_sec_by_tier` —— 同时启用上限、每阶每秒扣金；
     · `tech.list`（原生 9 条）/ `tech.clan_list`（王朝 + 帝国 + 两派共用）；
-    · `clan.list[].tech` —— 每派科技页的 9 个槽位（列优先，行 = 阶）。
+    · `clan.list[].tech` —— 每派科技页的 9 个槽位（★★ 2026.11.19：游戏里是一排**扇形卡牌**，
+      不再说「几行几列」；槽位按 3 个一组，组 = 阶，见 `_tech_slot_position`）。
 
 ★ 本工具**不会**替游戏发明新科技：它只编辑 config 里**已经存在**的条目与键。
   加一条新科技 / 新效果键，仍然要游戏侧先真的读它（见 README 第四节）。
@@ -156,6 +157,50 @@ TECH_EFFECT_KEYS: Tuple[TechEffectKey, ...] = (
                   ">0 = 区划转为己方那一刻，区内己方单位血量+士气回满"),
     TechEffectKey("charge_damage_mult", "冲锋额外伤害", "percent", 0.0, 5.0, "%",
                   "冲锋命中时**加法**追加的额外伤害（1.0 = +100%；与兵种自带 charge.damage_bonus 相加，不影响普通攻击）"),
+    # ---- ★★ 2026.11.18：王朝·义勇军 / 帝国·教会军那两条线的键（读取处在 logic/world.gd）
+    #      ⚠ 这里漏一个，编辑器的表单就会少一行、并报「游戏不认识的键」。
+    TechEffectKey("blitz_pop_debuff", "侵略如火·人口增速", "percent", -1.0, 0.0, "%",
+                  "己方单位踩住**敌方区划**时，该区划人口增速的增量（-0.04 = 慢 4%）"),
+    TechEffectKey("blitz_prod_debuff", "侵略如火·产出", "percent", -1.0, 0.0, "%",
+                  "同上，管那一片的产出"),
+    TechEffectKey("blitz_pop_cap", "侵略如火·人口压制上限", "percent", 0.0, 5.0, "%",
+                  "上面那条最多压到多少（-0.04/秒 累加，到 1.0 = 直接归零）"),
+    TechEffectKey("blitz_prod_cap", "侵略如火·产出压制上限", "percent", 0.0, 5.0, "%",
+                  "同上，管产出"),
+    TechEffectKey("infantry_hp_mult_add", "步兵血量上限", "percent", -0.9, 5.0, "%",
+                  "只作用于**步兵**；+0.2 = 血量上限 +20%"),
+    TechEffectKey("unit_hp_mult_add", "全单位血量上限", "percent", -0.9, 5.0, "%",
+                  "所有单位（-0.3 = 少 30%，给「血战到底」那种以血换攻的科技用）"),
+    TechEffectKey("infantry_armor_add", "步兵护甲", "number", 0.0, 99.0, "",
+                  "绝对值增量（不是百分比）"),
+    TechEffectKey("unit_attack_speed_add", "全单位攻速", "percent", -0.9, 5.0, "%",
+                  "+0.25 = 攻速 +25%（间隔按 1/(1+它) 缩短）"),
+    TechEffectKey("unit_armor_zero", "护甲归零", "number", 0.0, 1.0, "",
+                  ">0 = 全军护甲按 0 算（配合攻速 / 攻击加成用）"),
+    TechEffectKey("fatal_refill", "致命伤回满", "number", 0.0, 1.0, "",
+                  ">0 = 第一次致命伤时血量回满（每单位一次），见 world._try_fatal_survive"),
+    TechEffectKey("blood_war_attack_add", "暴走·攻击", "percent", 0.0, 5.0, "%",
+                  "「血战到底」触发后进入的暴走态：攻击 +50% 写 0.5"),
+    TechEffectKey("blood_war_drain", "暴走·每秒掉血", "percent", 0.0, 1.0, "%",
+                  "暴走期间每秒扣掉**当前血量**的比例（0.05 = 5%/秒）"),
+    TechEffectKey("grant_water_walk", "给步兵「水性」", "number", 0.0, 1.0, "",
+                  ">0 = 招募出来的步兵自带「水性」（可走水域）"),
+    TechEffectKey("gold_per_unit_no_freedom", "不自由税", "number", 0.0, 10.0, "金/秒",
+                  "每个**没有自由**的单位每秒给的金"),
+    TechEffectKey("gold_per_unit_freedom", "自由税", "number", 0.0, 10.0, "金/秒",
+                  "每个**有自由**的单位每秒给的金（与上一条互补，两条都点 = 全员交税）"),
+    TechEffectKey("freedom_plague_attack_add", "沐浴自由·攻击", "percent", 0.0, 5.0, "%",
+                  "含自由 + 站在染疫区划里的单位：攻击 +20% 写 0.2"),
+    TechEffectKey("freedom_plague_armor_add", "沐浴自由·防御", "percent", 0.0, 5.0, "%",
+                  "同上，管防御（armor）"),
+    TechEffectKey("fatal_invincible_sec", "信仰不死·无敌秒数", "number", 0.0, 60.0, "秒",
+                  "触发后无敌多久"),
+    TechEffectKey("fatal_hp_lock", "信仰不死·锁血点数", "number", 0.0, 9999.0, "血",
+                  "无敌结束时血量停在这个值（1 = 留 1 滴血）"),
+    TechEffectKey("fatal_invincible_cooldown", "信仰不死·冷却", "number", 0.0, 600.0, "秒",
+                  "两次触发之间的冷却（用户没定次数，这里按冷却实现）"),
+    TechEffectKey("missionary_plague", "传教", "number", 0.0, 1.0, "",
+                  ">0 = 己方**脱战**单位站在敌方区划里时，那片区划染上自由瘟疫"),
 )
 
 #: key → 元信息（查不到 = 不认识的键）
@@ -242,9 +287,17 @@ def parse_value(field: Field, text: str) -> Tuple[Any, str]:
 
 
 def _tech_slot_position(i: int) -> str:
-    """第 i 格（0 基）在 3×3 里的位置说明：列优先 + 行 = 阶。"""
-    col = ("左", "中", "右")[i // 3] if i < 9 else "?"
-    return "第 %d 行 / %s列" % (i % 3 + 1, col)
+    """第 i 格（0 基）在扇形牌里的位置说明。
+
+    ★★ 2026.11.19：科技页在游戏里是**一排扇形卡牌**（不是九宫格），所以不再用「第几行 /
+    第几列」。它实际是这样摆的（`view/tech_grid.gd::_entry_index_for_cell`）：
+    槽位按 **3 个一组**，一组 = 一个阶；扇形里从左到右依次是一阶组 → 二阶组 → 三阶组，
+    组内按槽位序号（第 1 → 第 4 → 第 7）。于是「第 i 格」= 第 `i % 3 + 1` 阶那一组的
+    第 `i // 3 + 1` 张。
+    """
+    tier = i % 3 + 1
+    nth = i // 3 + 1
+    return "%d 阶第 %d 张" % (tier, nth)
 
 
 def field_groups(page: TechPage) -> List[Tuple[str, List[Field]]]:
@@ -433,14 +486,17 @@ class ConfigModel:
                     "第 %d 格（%s）" % (s + 1, _tech_slot_position(s)), "槽位",
                     kind="text",
                     path=tuple(slots_path) + (s,),
-                    help="填科技 id（在 tech.clan_list 里）；留空 = 空位（界面画灰框不可点）"))
+                    help="填科技 id（在 tech.clan_list 里）；留空 = 这格没有牌"
+                         "（扇形里不显示、也不占位置）"))
             if fields:
                 out.append(TechPage(
                     id="tech:slots:%s" % clan_id, name="科技页 · %s" % clan_name,
                     icon="位", path=tuple(slots_path),
-                    intro="%s 的科技页槽位：9 格按**列优先**排（列1上中下 → 列2 → 列3），"
-                          "**行 = 阶**。所以第 1/4/7 格放一本、第 2/5/8 格放二本、"
-                          "第 3/6/9 格放三本；空串 = 空位。" % clan_name,
+                    intro="%s 的科技页槽位：游戏里是**一排扇形卡牌**（最多 9 张，从左到右）。"
+                          "槽位按 **3 个一组**：第 1/4/7 格 = 一阶、第 2/5/8 格 = 二阶、"
+                          "第 3/6/9 格 = 三阶；扇形里从左到右依次是一阶那组 → 二阶那组 → "
+                          "三阶那组（同组内先第 1 格、再第 4 格、再第 7 格）。"
+                          "空串 = 这一格没有牌（不显示、也不占位置）。" % clan_name,
                     fields=tuple(fields)))
         return out
 
@@ -453,11 +509,13 @@ class ConfigModel:
             Field("name", "名字", "文案", kind="text",
                   help="命令卡那一格的第一行"),
             Field("line", "格子小字", "文案", kind="text",
-                  help="第二行小字（80×80 的格子放不下长句，尽量短）"),
+                  help="科技牌底部那行小字（牌面放不下长句，尽量短）"),
             Field("desc", "悬停详情", "文案", kind="text",
-                  help="鼠标停在格子上时那块面板里的说明"),
-            Field("tier", "阶（第几行）", "基础", lo=1, hi=3, unit="阶",
-                  help="科技页第 N 行 = N 阶；要求大本营等级够才点得动"),
+                  help="鼠标停在牌上时，左下角那块说明牌里的**说明段落**"),
+            Field("tier", "阶（1~3）", "基础", lo=1, hi=3, unit="阶",
+                  help="解锁所需的大本营科技阶数（1 阶最低）。"
+                       "★ 它**不是位置**：牌摆在哪由它在列表里第几格决定 —— "
+                       "第 1/4/7 格摆一阶、第 2/5/8 格摆二阶、第 3/6/9 格摆三阶。"),
         ]
         effect = entry.get("effect", {})
         if isinstance(effect, dict):
@@ -542,18 +600,19 @@ class ConfigModel:
         tid = str(self.doc.value(list(page.path) + ["id"], "") or "")
         tier = int(v.get("tier", 0) or 0)
         if tier < 1 or tier > 3:
-            out.append("阶填了 %d —— 科技页只有 3 行（一/二/三本）。" % tier)
+            out.append("阶填了 %d —— 只有 1 / 2 / 3 阶（一 / 二 / 三本）。" % tier)
         elif page.id.startswith("tech:list:") or page.id.startswith("tech:clan_list:"):
-            # 列表下标 → 它在 3×3 里的行（列优先：行 = index % 3）
+            # 槽位下标 → 它在扇形里属于哪一组（3 个一组：组 = 阶）
             try:
                 index = int(page.id.rsplit(":", 1)[1])
             except (ValueError, IndexError):
                 index = -1
             if index >= 0 and index % 3 + 1 != tier:
-                out.append("这一条在第 %d 位，但填的是 %d 阶 —— 科技页是**列优先**摆的，"
-                           "第 %d 位会显示在第 %d 行（行 = 阶）。两者不一致时界面上看到的阶"
-                           "和规则里的阶会打架。"
-                           % (index + 1, tier, index + 1, index % 3 + 1))
+                out.append("这一条在第 %d 格，但填的是 %d 阶 —— 科技页是**一排扇形牌**，"
+                           "槽位按 3 个一组摆：第 1/4/7 格 = 一阶、第 2/5/8 格 = 二阶、"
+                           "第 3/6/9 格 = 三阶。第 %d 格应填 %d 阶（现在填 %d 阶），"
+                           "两者不一致时这张牌会跑到别的阶那一组去，牌面上的阶与规则里的阶打架。"
+                           % (index + 1, tier, index + 1, index % 3 + 1, tier))
         unknown = [f.key for f in page.fields
                    if f.group == "效果" and f.key not in TECH_EFFECT_BY_KEY]
         for key in unknown:
@@ -603,7 +662,7 @@ class ConfigModel:
             for i, key in enumerate(sorted(v, key=lambda k: int(k.split("_")[-1]))):
                 tid = str(v[key] or "").strip()
                 if not tid:
-                    rows.append("第 %d 格：空位（灰框，不可点）" % (i + 1))
+                    rows.append("第 %d 格：没有牌（扇形里不显示）" % (i + 1))
                     continue
                 name = self._tech_name(tid)
                 rows.append("第 %d 格：%s（%s）" % (i + 1, name or tid, tid))
@@ -618,7 +677,7 @@ class ConfigModel:
         tier = int(v.get("tier", 0) or 0)
         gold = self.doc.value(["tech", "gold_per_sec_by_tier",
                                max(0, min(2, tier - 1))], 0.0) if tier else 0.0
-        head = "第 %d 行（%d 本）· %s 金/秒" % (tier, tier, fmt_number(gold))
+        head = "%d 阶（%d 本）· %s 金/秒" % (tier, tier, fmt_number(gold))
         box = "┌─────────────┐\n│ %s\n│ %s\n└─────────────┘" % (
             _pad_cjk(name, 11), _pad_cjk(line, 11))
         eff: List[str] = []

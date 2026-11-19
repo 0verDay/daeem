@@ -5,13 +5,13 @@
 
 ## 1. 范围与模块
 
-AI 指挥官（`commander`）是第三种 AI，和 `garrison`、`reddot` 并列。它拥有独立大本营、资源池和收入，会招将、招兵、升级、建塔 / 墙、扩张和进攻。
+AI 指挥官（`commander`）是第三种 AI，和 `garrison`、`reddot` 并列。它拥有独立大本营、资源池和收入，会招将、招兵、升级、建塔、扩张和进攻。★ 2026.11.19 起**不再建造城墙**（城墙只能由战役编辑器预先摆放）。
 
 | 文件 | 职责 |
 |---|---|
 | `logic/ai_commander.gd` | 总控制器：tick、指令、经济、生产、反应、统计、状态 |
 | `logic/ai_army.gd` | 队伍、守军、生产编成、扩张 / 进攻 / 侦察 / 守备 / 巡逻 / 粘合 |
-| `logic/ai_build.gd` | 大本营升级、科技、区划特化、哨塔、木墙（**不升级**墙塔） |
+| `logic/ai_build.gd` | 大本营升级、科技、区划特化、哨塔（★ 木墙 / 石墙已不再由 AI 建造） |
 | `logic/ai_economy.gd` | 经济评分、保留金、富余判断 |
 | `logic/ai_profile.gd` | 默认参数；与 `data/config.json` 的 `ai.commander` 合并 |
 | `logic/ai_observer` / `view/ai_order_panel.gd` | 观战与四条玩家指令 |
@@ -145,9 +145,12 @@ AI 指挥官（`commander`）是第三种 AI，和 `garrison`、`reddot` 并列�
 ### 5.4 建筑改版（2026.10.26）
 
 - 显示名：`wall` = **木墙**，`tower` = **哨塔**（内部 id 不变，地图 / 战役数据不用迁移）。
-- 新增 **石墙**（`stone_wall`）/ **警戒塔**（`watch_tower`），建筑页第 2 行，需要 2 级大本营。
+- 新增 **石墙**（`stone_wall`）/ **警戒塔**（`watch_tower`）。
 - **取消建筑升级**：`upgrade.levels` 只剩大本营；`UpgradeRes.can_upgrade()` 对非大本营直接返回 `type`，`world.building_can_upgrade()` 也只看大本营。
-- AI 行为不变：继续造木墙 / 哨塔，**不再升级**任何墙塔；本轮 AI 不使用石墙 / 警戒塔。
+- ★★ 2026.11.19：**木墙 / 石墙改为只能由战役编辑器预先摆放**，玩家与 AI 都不能建造；
+  建筑页不再有墙牌，`build_reject_reason()` 对墙类返回 `wall_preplaced`。
+- AI 现在只造哨塔 / 警戒塔；`_try_wall*()` 保留为空实现，
+  `build.wall_enabled` 默认 `false`，**不升级**任何墙塔。
 - 所有建筑对**投掷物**伤害免伤 90%（`building.<type>.ranged_reduction`，缺省 0.9）；近战与攻城（投石车）全额。
 
 ### 5.5 关卡阵营起手资源（2026.10.29）
@@ -199,7 +202,16 @@ AI 指挥官（`commander`）是第三种 AI，和 `garrison`、`reddot` 并列�
     `build_interval 1.05`、`reaction_delay 1.1`（更厚、更慢）；
   - 帝国：`army_cap 0.95`、`army_interval 0.9`、`strategic_interval 0.9`、
     `production_interval 0.9`、`build_interval 0.95`、`reaction_delay 0.85`（更精、更快）。
+  - 王朝·义勇军（`dynasty_volunteer`）：`army_cap 1.1`、`army_interval 0.95`、
+    `production_interval 0.9`、`build_interval 1.05`、`reaction_delay 0.95`
+    （人海 + 更早开打：`auto.attack_after_sec 40`；职能轮换 `line / guerrilla / line`）。
+  - 帝国·教会军（`empire_church`）：倍率全部 `1.0`（不额外加速 / 加厚），
+    但进攻时机 `auto.attack_after_sec 48`、职能轮换 `line / ranged / line`、
+    守军规模 8；科技第一项 `ec_unfree_tax`（阵线推进 + 传教染区）。
   - 原生：不写 ⇒ 全部 1.0，与全局基准逐位一致。
+- ★★ 2026.11.19：义勇军 / 教会军与王朝 / 帝国**共用同一条设置路径**
+  （`data/config.json → clan.list[].commander_ai`），`test_clan` 现在同时锁定四派的
+  纯函数 profile 与 `ai_test_clan` 关卡的运行时控制器参数。
 - 合并顺序不变：`DEFAULTS → ai.commander → 派系 commander_ai → 关卡 → 运行时 → 难度 → multipliers`。
 
 ## 6. 战斗与索敌
@@ -238,7 +250,8 @@ AI 指挥官（`commander`）是第三种 AI，和 `garrison`、`reddot` 并列�
 - `test_ai_test_duel.gd` 218、`test_ai_observer.gd` 57、`test_ai_order_panel.gd` 19、
   `test_ai.gd` 61、`test_ai_goals.gd` 35、`test_build_points.gd` 252、
   `test_coop_ai_teammate.gd` 27、`test_campaign_ai.gd` 63、`test_zone_recruit.gd` 170、
-  `test_clan.gd` **301**（含派系整体倍率层）、`test_ai_test_campaigns.gd` **79**。
+  `test_clan.gd` **449**（含派系整体倍率层、义勇军 / 教会军独立 AI 与
+  `ai_test_clan` 运行时控制器）、`test_ai_test_campaigns.gd` **79**。
 
 2026-10-29 全量：`tools/run-tests.ps1` **95 套 / 8554 项断言全部通过**；`tools/check-syntax.ps1` **237 个 `.gd` 通过**。战役编辑器：`test_model.py` **341** 项、`test_app.py` **258** 项通过。重点套件：
 

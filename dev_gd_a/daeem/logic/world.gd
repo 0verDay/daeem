@@ -5578,13 +5578,17 @@ func wall_ring_buildable_tiles(zid: int, faction: String) -> Array:
 ##   · "occupied_or_terrain" —— 地形不可建 / 已经被建筑占住；
 ##   · "not_in_zone"         —— 不是自己的区划；
 ##   · "under_capture"       —— 区划正被敌方踩中心（整块禁建）；
-##   · "not_build_point"     —— ★ 非城墙建筑，但这一格不是建造点位；
-##   · "not_zone_center"     —— ★ 城墙，但落点不是某个区划中心；
-##   · "wall_no_space"       —— ★ 城墙环一圈全被地形 / 建筑挡住，没有可建的位置。
+##   · "not_build_point"     —— ★ 可建造建筑，但这一格不是建造点位；
+##   · "wall_preplaced"      —— ★ 城墙（木墙 / 石墙）不再允许建造：只能由战役编辑器预先摆放。
 ##
-## ★ 城墙走**另一条分支**：它的落点是区划中心那一格（那一格上本来就有中立建筑，
-##   不能先拿 `PathfinderRes.occupied` 去挡它），真正的合法性看环上的空格。
+## ★★ 2026.11.19（用户口径）：城墙**不再有运行时建造分支** —— 无论落点是不是区划中心，
+##   一律返回 `wall_preplaced`。编辑器 / 关卡数据仍走 `add_building()` 直接预置，
+##   所以地图上已有的城墙照常存在、照常阻挡。
 func build_reject_reason(type: String, tx: int, ty: int, faction: String) -> String:
+	# ★★ 2026.11.19：城墙只能由战役编辑器预先摆放，玩家 / AI 都不能建造。
+	#   放在最前面：「墙根本不能建」比「等级不够 / 这里不能建」更根本。
+	if BuildingRes.is_wall_type(type):
+		return "wall_preplaced"
 	# ★★ 2026.11.18：**派系专属建筑**（教堂）与**每区划上限**。
 	#   放在最前面：这两条与落点无关（「你不会造」比「这里不能造」更根本）。
 	if faction != "":
@@ -5596,20 +5600,6 @@ func build_reject_reason(type: String, tx: int, ty: int, faction: String) -> Str
 			if cap_zid >= 0 \
 					and zone_building_count(cap_zid, type, faction) >= zone_cap:
 				return "per_zone_limit"
-	if BuildingRes.is_wall_type(type):
-		if zones == null:
-			return "not_zone_center"
-		var zid: int = int(zones.center_zone_at_id(tx, ty))
-		if zid < 0:
-			return "not_zone_center"
-		if faction != "":
-			if not zone_allows_build(tx, ty, faction):
-				return "not_in_zone"
-			if zone_capture_blocks_build(tx, ty, faction):
-				return "under_capture"
-		if wall_ring_buildable_tiles(zid, faction).is_empty():
-			return "wall_no_space"
-		return ""
 	if not map.terrain.has(tx, ty) or not map.in_active_rect(tx, ty) \
 			or not map.terrain_walkable(tx, ty):
 		return "occupied_or_terrain"
@@ -5669,14 +5659,17 @@ func zone_building_count(zid: int, type: String, faction: String) -> int:
 ## 供界面用：拖某张建筑牌时，**所有可以落点**的锚点。
 ##
 ## @return Array[Dictionary]，每项 `{"tile": Vector2i, "zone_id": int}`；
-##   非城墙 = 己方区划里「空着的建造点位」；城墙 = 己方区划的**中心格**。
+##   都是己方区划里「空着的建造点位」。
 ##
+## ★★ 2026.11.19（用户口径）：城墙只能由战役编辑器预先摆放 ⇒ **没有运行时锚点**，
+##   传入墙类建筑直接返回空数组（HUD 也不再给墙牌）。
 ## ★ 顺序确定（区划表顺序 → 点位表顺序）：HUD 的「最近锚点」在等距时不会抖。
 func build_anchors_for(type: String, faction: String) -> Array:
 	var out: Array = []
 	if zones == null or faction == "":
 		return out
-	var wall := BuildingRes.is_wall_type(type)
+	if BuildingRes.is_wall_type(type):
+		return out
 	for z in zones.zones:
 		if typeof(z) != TYPE_DICTIONARY:
 			continue
@@ -5684,18 +5677,10 @@ func build_anchors_for(type: String, faction: String) -> Array:
 		var zid := int(zd.get("id", -1))
 		if zid < 0 or not accepts_owner(String(zd.get("owner", "")), faction):
 			continue
-		if wall:
-			var cv: Variant = zd.get("center", null)
-			if cv == null:
-				continue
-			if wall_ring_buildable_tiles(zid, faction).is_empty():
-				continue
-			out.append({"tile": cv, "zone_id": zid})
-		else:
-			for p in build_points_of_zone(zid):
-				var tile: Vector2i = p
-				if can_build_at(tile.x, tile.y, faction):
-					out.append({"tile": tile, "zone_id": zid})
+		for p in build_points_of_zone(zid):
+			var tile: Vector2i = p
+			if can_build_at(tile.x, tile.y, faction):
+				out.append({"tile": tile, "zone_id": zid})
 	return out
 
 

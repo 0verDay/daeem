@@ -123,22 +123,21 @@ func _test_flow(cfg, w) -> void:
 	ok(float(w.resources.get("food", 0.0)) >= 1000.0, "★★ 步骤 5：1000 粮食")
 	ok(float(w.resources.get("gold", 0.0)) >= 1000.0, "★★ 步骤 5：1000 黄金")
 	var title := String(w.story_objective.get("title", ""))
-	eq(title, "建立防御0/6 建造粮田0/2", "★★ 步骤 6：建设目标标题")
+	eq(title, "建造哨塔0/2 建造粮田0/2", "★★ 步骤 6：建设目标标题")
 	eq(String(w.story_objective.get("desc", "")),
-		"把建筑牌拖到高亮的建造点位上（城墙拖到区划中心，一次围一圈）",
-		"★ 建设目标描述（2026.11.15 起是拖牌建造）")
+		"把建筑牌拖到高亮的建造点位上（城墙只能由设计师预先摆放）",
+		"★ 建设目标描述（城墙已改为只能预置）")
 	ok(bool(w.story_objective.get("quiet", false)), "★ 计数目标不重播打字机")
 
-	# 6) 建 5 个防御 + 1 块田：计数应实时更新，但还不能完成
-	for i in 5:
-		_add_building(w, "wall" if i % 2 == 0 else "tower")
+	# 6) 建 1 塔 + 1 田：计数应实时更新，但还不能完成
+	_add_building(w, "tower")
 	_add_building(w, "farm")
 	d.tick(0.016, [])
 	eq(String(w.story_objective.get("title", "")),
-		"建立防御5/6 建造粮田1/2", "★★ 计数实时更新（5/6、1/2）")
+		"建造哨塔1/2 建造粮田1/2", "★★ 计数实时更新（1/2、1/2）")
 	eq(int(w.map.cols), 14, "★ 未完成前不扩图")
 
-	# 补满 6 防御 + 2 田 → 扩图
+	# 补满 2 塔 + 2 田 → 扩图
 	_add_building(w, "tower")
 	_add_building(w, "farm")
 	d.tick(0.016, [])

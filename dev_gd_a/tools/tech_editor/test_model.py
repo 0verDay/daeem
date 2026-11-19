@@ -380,13 +380,13 @@ def t_tech_warnings() -> None:
     model.set_value(slots, first, old)
     eq(model.warnings(slots), [], "改回去 → 提示消失")
 
-    # 阶与位置不符（列优先：第 1 位应该是一本）
+    # 阶与位置不符（★ 2026.11.19：科技页是一排扇形牌，槽位 3 个一组 —— 第 1 格应该是一阶）
     page = model.page("tech:list:0")
     tier_field = [f for f in page.fields if f.key == "tier"][0]
     old_tier = model.value(page, tier_field)
     model.set_value(page, tier_field, 3)
     ok(any("不一致" in w for w in model.warnings(page)),
-       "★ 第 1 位却填了三阶 → 有提示（行 = 阶）")
+       "★ 第 1 格却填了三阶 → 有提示（槽位 3 个一组，组 = 阶）")
     model.set_value(page, tier_field, old_tier)
 
     # 效果键不在注册表里 ⇒ 提示「游戏会静默忽略」

@@ -37,28 +37,32 @@ func _test_build_command_gate(cfg) -> void:
 	w.resources["gold"] = 10000.0
 	ok(w.find_base_of("p1") != null, "（前提）有大本营")
 	var tile := Vector2i(-1, -1)
-	# ★★ 2026.11.15：墙只能围区划中心（一张牌建整圈）——先拿一个墙锚点。
-	var wall_anchors: Array = w.build_anchors_for("stone_wall", "p1")
-	if not wall_anchors.is_empty():
-		tile = wall_anchors[0]["tile"]
-	ok(tile.x >= 0, "（前提）己方有可以围墙的区划中心")
+	# ★★ 2026.11.19：城墙不再有建造锚点；这里随便拿一个己方地块验证命令必被拒。
+	var base = w.find_base_of("p1")
+	if base != null:
+		tile = Vector2i(int(base.tx), int(base.ty))
+	eq(w.build_anchors_for("stone_wall", "p1").size(), 0,
+		"★★ 石墙没有建造锚点（局内不能建造）")
+	ok(tile.x >= 0, "（前提）拿到一个己方地块用于验证拒因")
 	if tile.x < 0:
 		return
 	var before := _count_type(w, "stone_wall")
 	ok(not CommandRes.apply(w, cfg, {
 		"kind": "build", "build_type": "stone_wall",
 		"tx": tile.x, "ty": tile.y, "faction": "p1"}),
-		"★★ 1 级大本营不能建石墙")
+		"★★ 石墙不能在局内建造（只能由战役编辑器预置）")
 	var evts: Array = w.tick(0.01)
-	eq(_reject_reason(evts, "build_rejected"), "base_level", "★★ 拒因码 = base_level")
+	eq(_reject_reason(evts, "build_rejected"), "wall_preplaced",
+		"★★ 拒因码 = wall_preplaced（比 base_level 更根本）")
 	eq(_count_type(w, "stone_wall"), before, "★ 被拒时没有偷偷建出来")
 
 	w.debug_upgrade_base_to_level(2, "p1")
-	ok(CommandRes.apply(w, cfg, {
+	ok(not CommandRes.apply(w, cfg, {
 		"kind": "build", "build_type": "stone_wall",
 		"tx": tile.x, "ty": tile.y, "faction": "p1"}),
-		"★★ 2 级大本营可以建石墙")
-	ok(_count_type(w, "stone_wall") > before, "★ 石墙真的建出来了（整圈）")
+		"★★ 即使 2 级大本营也不能建石墙")
+	w.tick(0.01)
+	eq(_count_type(w, "stone_wall"), before, "★ 等级够了也还是建不出来")
 	# 警戒塔 = 非城墙建筑：落在建造点位上。
 	var tower_anchors: Array = w.build_anchors_for("watch_tower", "p1")
 	ok(not tower_anchors.is_empty(), "（前提）还有空着的建造点位建警戒塔")

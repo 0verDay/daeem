@@ -8,6 +8,7 @@ const PathfinderRes = preload("res://logic/pathfinder.gd")
 const CollisionRes = preload("res://logic/collision.gd")
 const BuildingRes = preload("res://logic/building.gd")
 const FactionRes = preload("res://logic/faction.gd")
+const ProjectileRes = preload("res://logic/projectile.gd")
 
 const DT := 1.0 / 60.0
 
@@ -25,6 +26,7 @@ func _cases() -> void:
 	_test_path_avoids_body(cfg)
 	_test_gap_between_towers(cfg)
 	_test_wall_unchanged(cfg)
+	_test_ranged_over_wall(cfg)
 	_test_map_outpost(cfg)
 
 func _test_geometry(cfg) -> void:
@@ -213,11 +215,13 @@ func _test_wall_unchanged(cfg) -> void:
 		return
 	ok(wall.body_scale(cfg) == 1.0, "城墙 body_scale = 1.0（本体就是整格）")
 	ok(wall.blocks("enemy"), "城墙对敌方整格阻挡")
-	ok(not wall.blocks("p1"), "城墙对己方放行")
+	ok(wall.blocks("p1"), "★★ 城墙对己方也整格阻挡（不分阵营）")
+	ok(wall.body_blocks("enemy") and wall.body_blocks("p1"),
+		"★★ 城墙本体对双方都挡")
 	ok(not PathfinderRes.passable(w.map, w.buildings, cfg, t.x, t.y, "enemy"),
 		"敌方不能进城墙那一格")
-	ok(PathfinderRes.passable(w.map, w.buildings, cfg, t.x, t.y, "p1"),
-		"己方可以把城墙那一格当通路")
+	ok(not PathfinderRes.passable(w.map, w.buildings, cfg, t.x, t.y, "p1"),
+		"★★ 己方也不能进城墙那一格")
 
 	var spot := Vector2i(-1, -1)
 	for ty in range(2, w.map.rows - 2):
@@ -233,6 +237,37 @@ func _test_wall_unchanged(cfg) -> void:
 		ok(not PathfinderRes.diagonal_step_allowed(w.map, w.buildings, cfg,
 			spot.x + 1, spot.y, Vector2i(-1, 1), "enemy"),
 			"★ 两段对角城墙之间仍然不能斜穿（本体没有缝）")
+
+## ★★ 2026.11.19（用户口径）：城墙**阻挡移动，但不阻挡远程攻击**。
+## 投掷物只沿「射手 → 目标」飞行并结算命中，不会与中途的建筑做碰撞。
+func _test_ranged_over_wall(cfg) -> void:
+	var w = require_world(cfg)
+	if w.units.is_empty():
+		ok(false, "（前提）至少有一个单位可用于远程穿透测试")
+		return
+	var t := _free_tile_near(w, 8, 8)
+	var wall = w.add_building("wall", t.x, t.y, FactionRes.DEFAULT_FACTION)
+	ok(wall != null, "（前提）摆一段城墙用于远程测试")
+	if wall == null:
+		return
+	var shooter = w.units[0]
+	var target = w.spawn_enemy(t.x + 2, t.y)
+	ok(target != null, "（前提）在墙的另一侧生成一个敌方靶子")
+	if target == null:
+		return
+	var center: Vector2 = wall.center()
+	shooter.pos = center - Vector2(2.0, 0.0)
+	target.pos = center + Vector2(2.0, 0.0)
+	var hp0: float = target.hp
+	var p = ProjectileRes.spawn(w, cfg, String(shooter.faction), shooter,
+		shooter.pos, target, false, 10.0)
+	ok(p != null, "投掷物从墙的一侧生成")
+	for _i in 600:
+		if w.projectiles.is_empty():
+			break
+		ProjectileRes.update(w, cfg, DT)
+	ok(target.hp < hp0, "★★ 远程攻击越过城墙命中目标（城墙不阻挡投掷物）")
+
 
 func _test_map_outpost(cfg) -> void:
 	var w = require_world(cfg)

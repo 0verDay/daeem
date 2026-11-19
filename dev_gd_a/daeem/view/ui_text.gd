@@ -52,6 +52,56 @@ static func fit(font: Font, text: String, max_w: float, font_size: int) -> Strin
 	return "…"
 
 
+## 多行折行：按宽度把一句长文本切成若干行（中文逐字切，英文 / 数字尽量整词）。
+##   @param max_lines 最多几行；0 = 不限。超出时最后一行补「…」
+## ★ 悬停面板的「说明」段落用它（`hover_tip` 的 body）：面板是**固定尺寸**，
+##   所以行数必须由调用方按可用高度算好再限制。
+static func wrap(font: Font, text: String, max_w: float, font_size: int,
+		max_lines: int = 0) -> PackedStringArray:
+	var out := PackedStringArray()
+	if font == null or text.strip_edges() == "" or max_w <= 0.0:
+		return out
+	var line := ""
+	for i in text.length():
+		var ch := text.substr(i, 1)
+		# 换行符：硬断行
+		if ch == "\n":
+			out.append(line)
+			line = ""
+			continue
+		var probe := line + ch
+		if font.get_string_size(probe, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x <= max_w:
+			line = probe
+			continue
+		if line == "":
+			# 一个字都放不下了：直接把这一字吃掉，避免死循环
+			out.append(ch)
+			line = ""
+			continue
+		# 优先在空格 / 常见断点处断，不然逐字断
+		var cut := line.length()
+		for sep in [" ", "，", "。", "、", "；", "：", "）", ")", "—"]:
+			var at := line.rfind(sep)
+			if at > 0:
+				cut = mini(cut, at + 1)
+		out.append(line.substr(0, cut))
+		line = line.substr(cut) + ch
+		if line.length() > 1 and font.get_string_size(line, HORIZONTAL_ALIGNMENT_LEFT,
+				-1, font_size).x > max_w:
+			out.append(line.substr(0, line.length() - 1))
+			line = line.substr(line.length() - 1)
+	if line != "":
+		out.append(line)
+	if max_lines <= 0 or out.size() <= max_lines:
+		return out
+	var clipped := PackedStringArray()
+	for i in max_lines:
+		clipped.append(out[i])
+	var last := clipped[max_lines - 1]
+	clipped[max_lines - 1] = fit(font, last + "…", max_w, font_size)
+	return clipped
+
+
 ## 居中画一行字（`rect` 的中心）。
 static func centered(ci: CanvasItem, font: Font, rect: Rect2, text: String,
 		font_size: int, color: Color) -> void:

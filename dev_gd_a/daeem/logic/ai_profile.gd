@@ -176,10 +176,11 @@ const DEFAULTS := {
 		"pause_defense_when_understrength": true,
 		"tower_threat_radius": 9.0,
 		"tower_cover_radius": 4,
-		"wall_enabled": true,
-		"wall_hard_max": 240,
-		# ★★ 2026.11.15：**边境长墙已删除** —— 墙只能围区划中心一圈（与玩家同一规则），
-		#   所以 `wall_border_*` 那组参数随之移除；AI 只用 `wall_enabled` / `wall_hard_max`。
+		# ★★ 2026.11.19（用户口径）：城墙只能由战役编辑器预先摆放，
+		#   玩家和 AI 都不能建造 ⇒ AI 的这一开关默认关闭，`_try_wall*` 也只是空实现。
+		"wall_enabled": false,
+		"wall_hard_max": 0,
+		# ★★ 2026.11.15：`wall_border_*` 那组参数已移除（边境长墙删除）。
 		"tower_frontier_bonus": 4.0,
 		# ★★ 2026.11：≥ 10 ⇒ 升本可以动用「补员预留」那部分钱（见 ai_build._try_base_upgrade）。
 		#   10 -> 14：这一轮口径是「提高 command AI 升本的权重」（三本门槛已经降到 2 将）。

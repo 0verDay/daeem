@@ -1340,7 +1340,8 @@ func _test_build_economy_guard(cfg) -> void:
 	ok(after == before, "★★ 缺编时 update 不会拿补员的钱去建塔")
 
 
-## ★★ 城墙：前线区划围绕中心 3×3 外圈连续造；被入侵时补缺口；木墙 / 哨塔不升级。
+## ★★ 2026.11.19（用户口径）：城墙只能由战役编辑器预先摆放 ⇒ AI 不再造墙。
+##   同时保留「AI 不升级木墙 / 哨塔」的旧回归。
 func _test_wall_and_upgrade(cfg) -> void:
 	var w = _make_ai_test_world(cfg)
 	if w == null:
@@ -1348,52 +1349,16 @@ func _test_wall_and_upgrade(cfg) -> void:
 		return
 	var c = w.ai_commanders["F1"]
 	w.ai_faction_resources["F1"] = {"food": 8000.0, "gold": 8000.0}
-	var z0 = null
-	for z in w.zones.zones:
-		if typeof(z) == TYPE_DICTIONARY and String((z as Dictionary).get("owner", "")) == "F1" \
-				and (z as Dictionary).get("center", null) != null:
-			z0 = z
-			break
-	if z0 == null:
-		ok(false, "（前提）有己方前线区划")
-		return
-	var ring: Array = AiBuildRes._wall_ring_tiles(c, z0)
-	ok(ring.size() == 8, "（前提）中心 3×3 外圈是 8 格")
-	var z0id := int((z0 as Dictionary).get("id", -1))
-	var buildable_before: int = w.wall_ring_buildable_tiles(z0id, "F1").size()
-	ok(buildable_before >= 4,
-		"（前提）这一圈至少有几格能建（实际 %d/8）" % buildable_before)
-	# ★★ 2026.11.15：AI 与玩家同一条规则 —— 一次 `_try_wall` = 一张墙牌 = **整圈**。
-	#   先把 z0 标成「正被入侵」，确保 `_pick_wall_zone` 一定选它（威胁 +100 分）。
-	(z0 as Dictionary)["capture_state"] = "reading"
-	(z0 as Dictionary)["capture_faction"] = "p2"
-	AiBuildRes._try_wall(c)
-	var ring_walls: Array = []
-	for b in w.building_list:
-		if b.alive and String(b.type) == "wall" and String(b.owner) == "F1" \
-				and int(b.zone_id) == z0id:
-			ring_walls.append(b)
-	eq(ring_walls.size(), buildable_before,
-		"★★ 一张墙牌把这一圈建满（跳过被地形 / 建筑挡住的位置）")
-	for i in 6:
+	var walls_before := _count_walls(w, "F1")
+	ok(bool(c.profile.get("build", {}).get("wall_enabled", true)) == false,
+		"★★ AI profile 的 wall_enabled = false")
+	# 连续多次调用兼容入口：一次都不能建出墙来。
+	for _i in 8:
 		AiBuildRes._try_wall(c)
-	eq(ring_walls.size(), buildable_before, "★★ 已经建满的圈不会重复建")
-	# 被入侵时补缺口。
-	if not ring_walls.is_empty():
-		var wb = ring_walls[0]
-		var old := Vector2i(int(wb.tx), int(wb.ty))
-		w.remove_building(wb, true)
-		(z0 as Dictionary)["capture_state"] = "reading"
-		(z0 as Dictionary)["capture_faction"] = "p2"
-		(z0 as Dictionary)["capture_value"] = 0.5
-		AiBuildRes._try_wall(c)
-		var rebuilt = false
-		for b in w.building_list:
-			if b.alive and String(b.type) == "wall" and String(b.owner) == "F1" \
-					and int(b.tx) == old.x and int(b.ty) == old.y:
-				rebuilt = true
-		ok(rebuilt, "★★ 被入侵时优先补上城墙缺口")
-	# ★★ 2026.10.26：取消建筑升级 —— AI 只造木墙 / 哨塔，不再升级任何墙塔。
+		AiBuildRes._try_wall_ring(c)
+	eq(_count_walls(w, "F1"), walls_before, "★★ AI 不再建造任何城墙")
+	ok(not c.stats.has("walls_built"), "★★ AI 统计里不再出现 walls_built")
+	# ★★ 2026.10.26：取消建筑升级 —— AI 不再升级任何墙塔。
 	var any_upgrading := false
 	for b in w.building_list:
 		if b.alive and String(b.owner) == "F1" and b.is_upgrading():
@@ -1401,6 +1366,15 @@ func _test_wall_and_upgrade(cfg) -> void:
 			break
 	ok(not any_upgrading, "★★ AI 不再升级木墙 / 哨塔")
 	ok(not c.stats.has("upgrades"), "★★ AI 统计里不再有 upgrades")
+
+
+func _count_walls(w, faction: String) -> int:
+	var n := 0
+	for b in w.building_list:
+		if b != null and b.alive and String(b.type) == "wall" \
+				and String(b.owner) == faction:
+			n += 1
+	return n
 
 
 ## ★★ 2026.10.25：建造优先级 —— 这一 tick 能造塔就不造墙；前线塔优先于后方塔。

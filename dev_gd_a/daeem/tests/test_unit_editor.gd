@@ -887,11 +887,12 @@ func _test_hud_build_page() -> void:
 	main.hud.refresh()
 	var card = main.hud.command_card
 	eq(card.entries().size(), 9, "（前提）建造页按 3×3 九格")
-	eq(String(card.entry_at(0).get("build_type", "")), "wall", "第 1 格是木墙")
-	eq(card.cell_label(0), "木墙", "名字来自 config")
-	eq(String(card.entry_at(1).get("build_type", "")), "tower", "第 2 格是哨塔")
-	eq(String(card.entry_at(3).get("build_type", "")), "stone_wall", "第二行第 1 格是石墙")
-	eq(String(card.entry_at(4).get("build_type", "")), "watch_tower", "第二行第 2 格是警戒塔")
+	# ★★ 2026.11.19：城墙只能由战役编辑器预先摆放，建筑页不再出现墙牌。
+	eq(String(card.entry_at(0).get("build_type", "")), "tower", "第 1 格是哨塔")
+	eq(card.cell_label(0), "哨塔", "名字来自 config")
+	eq(String(card.entry_at(1).get("build_type", "")), "farm", "第 2 格是粮田")
+	eq(String(card.entry_at(3).get("build_type", "")), "watch_tower", "第二行第 1 格是警戒塔")
+	eq(String(card.entry_at(4).get("build_type", "")), "house", "第二行第 2 格是房屋")
 	eq(String(card.entry_at(8).get("build_type", "")), "mine",
 		"★★ 矿脉按 slot = 3 落在第三行最右侧")
 	eq(card.cell_label(8), "矿脉", "★ 第三行最右格是矿脉")

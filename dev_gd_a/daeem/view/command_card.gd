@@ -80,6 +80,12 @@ var _glow_t: float = 0.0
 ## 点击牌组切页时的新牌从牌手下方错落升起；鼠标向上拖牌时跟随指针。
 const DRAG_LIFT_THRESHOLD := 10.0
 const DRAG_RETURN_SEC := 0.20
+## ★★ 2026.11.19（用户口径）：牌被打出后，**新卡从屏幕下方以正常大小升入手牌位**。
+##   旧版是「原地淡回」（`_restore_card_at_slot` 只写 alpha），玩家看到的是同一张牌
+##   凭空消失又凭空出现；现在起点在牌区下方（整张牌都在屏幕外），终点是它自己的槽位。
+const CARD_RISE_SEC := 0.26
+## 拖起一张原本被悬停放大的牌时，先把它收回 1.0 的时长（不再一帧硬缩）。
+const DRAG_SCALE_SEC := 0.12
 ## ★★ 2026.11.14：拖拽中「卡面显示 / 淡出」的过渡时长，以及手牌区判据向下放宽多少。
 ##   （见 `_set_drag_face_alpha()`：拖回手牌就淡回来，拖到地图上就淡掉）
 const DRAG_FACE_FADE_SEC := 0.12
@@ -96,10 +102,16 @@ const HOVER_RAISE_SEC := 0.14
 const HOVER_RAISE_PX := UiLayoutRes.CARD_HOVER_RAISE_PX
 ## ★★ 2026.11.16（用户口径）：「卡牌在被悬停时应当放大」。
 ##   只放大**被悬停的那一张**；邻居保持 1.0，靠横向让开给放大留出空间。
-const HOVER_SCALE := 1.5
+const HOVER_SCALE := 1.6
 var _drag_index: int = -1
 var _drag_start_global := Vector2.ZERO
 var _dragging_card: bool = false
+## ★★ 2026.11.19：拖牌时按**横向移动速度**给一点倾斜（最多约 5°）。
+##   指针停下 / 回手动画会自然回到 0；只影响表现，不改善命中或落点。
+const DRAG_TILT_MAX := 0.09
+const DRAG_TILT_PER_PX := 0.0022
+var _drag_last_pointer := Vector2.ZERO
+var _drag_tilt: float = 0.0
 ## ★★ 2026.11.15：正在「被拒绝 → 飞回手牌」的那一格（-1 = 没有）。
 ##   返程期间**不允许悬停抬起**：两个 Tween 同时写 `position` / `position:y` 会让
 ##   按钮和卡面被不同的 Tween 拽到两个位置，看起来就是「重影 / 又一张相同的牌」。
@@ -109,6 +121,11 @@ var _returning_index: int = -1
 var _hover_suppressed_index: int = -1
 var _deck_tween: Tween = null
 var _drag_tween: Tween = null
+## ★★ 2026.11.19：拖起时把悬停的 1.5 倍**缓动收回到 1.0**。
+##   旧版在 `_update_drag_position()` 里直接 `scale = ONE`，牌被抓起那一刻会突然变小；
+##   这里单独一条 Tween，若牌还没收完就被拒回手，`_animate_card_back()` 会先杀掉它，
+##   再按「当前大小 → 1.0」**线性**收束。
+var _drag_scale_tween: Tween = null
 var _drag_fade_tween: Tween = null
 ## 建筑牌「生效后只把自己淡回槽位」的 Tween（不重排整手牌）。
 var _restore_tween: Tween = null
@@ -166,9 +183,9 @@ func setup() -> void:
 		face_style.border_color = UiStyleRes.line()
 		face_style.set_border_width_all(2)
 		face_style.set_corner_radius_all(10)
-		face_style.shadow_color = Color(0.0, 0.0, 0.0, 0.76)
-		face_style.shadow_size = 7
-		face_style.shadow_offset = Vector2(0.0, 6.0)
+		face_style.shadow_color = Color(0.0, 0.0, 0.0, 0.84)
+		face_style.shadow_size = 10
+		face_style.shadow_offset = Vector2(0.0, 8.0)
 		face.add_theme_stylebox_override("panel", face_style)
 		face.visible = false
 		add_child(face)
@@ -392,6 +409,8 @@ func set_entries(list: Array) -> void:
 		_deck_tween.kill()
 	if _drag_tween != null and _drag_tween.is_running():
 		_drag_tween.kill()
+	if _drag_scale_tween != null and _drag_scale_tween.is_running():
+		_drag_scale_tween.kill()
 	if _drag_fade_tween != null and _drag_fade_tween.is_running():
 		_drag_fade_tween.kill()
 	if _restore_tween != null and _restore_tween.is_running():
@@ -656,6 +675,7 @@ func _raise_card(i: int, raised: bool) -> void:
 		var target_pos := base.position
 		var target_rot := UiLayoutRes.card_fan_rotation(ordinal, count)
 		var target_scale := 1.0
+		var delay := 0.0
 		if j == _hover_index:
 			# 悬停的那张：抬起 + 摆正 + 放大 + 压在最上层。
 			target_pos.y -= HOVER_RAISE_PX
@@ -671,9 +691,12 @@ func _raise_card(i: int, raised: bool) -> void:
 			#   换到相邻牌时，同侧牌的距离不变 ⇒ 它们不会跟着动。
 			if hover_ordinal >= 0:
 				target_pos.x += UiLayoutRes.card_hover_push(ordinal, hover_ordinal)
+				# ★★ 2026.11.19：主牌先起、邻居再让 —— 最多延迟 25ms，避免整排同时抽动。
+				delay = minf(0.025, 0.012 * absf(float(ordinal - hover_ordinal)))
 			_cells[j].z_index = ordinal * 2 + 1
 			_card_faces[j].z_index = ordinal * 2
-		_ease_card_pose(j, target_pos, target_rot, target_scale)
+		_ease_card_pose(j, target_pos, target_rot, target_scale, false,
+			HOVER_RAISE_SEC, delay)
 
 
 ## 当前页**有内容且可见**的格子下标，按扇形序号排列（散开 / 抬起 / 落回共用）。
@@ -729,9 +752,11 @@ func _settle_spread(except_index: int) -> void:
 ## ★ `animations_enabled() == false`（无头测试 / 玩家关动效）时**直接到位**：
 ##   既有断言依赖「调完 `_raise_card` 之后牌就在目标位置」。
 ## ★ `sec` = 这一段的时长（默认悬停那档 0.14s；「下沉 / 浮回」传 `CARD_TUCK_SEC`）。
+## ★★ 2026.11.19：`delay_sec` 让邻居晚一拍让开（主牌先起、两侧后动）；
+##   放大到 >1 时缩放走 `TRANS_BACK`，有一点点过冲，手感更「弹」。
 func _ease_card_pose(i: int, target_pos: Vector2, target_rot: float,
 		target_scale: float = 1.0, allow_while_dragging: bool = false,
-		sec: float = HOVER_RAISE_SEC) -> void:
+		sec: float = HOVER_RAISE_SEC, delay_sec: float = 0.0) -> void:
 	while _hover_tweens.size() <= i:
 		_hover_tweens.append(null)
 	var old = _hover_tweens[i]
@@ -767,18 +792,20 @@ func _ease_card_pose(i: int, target_pos: Vector2, target_rot: float,
 		face.scale = target_sv
 		return
 	var tw := create_tween().set_parallel(true)
+	var scale_trans: Tween.TransitionType = Tween.TRANS_BACK \
+		if target_scale > 1.001 else Tween.TRANS_CUBIC
 	tw.tween_property(cell, "position", target_pos, sec) \
-		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		.set_delay(delay_sec).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	tw.tween_property(cell, "rotation", target_rot, sec) \
-		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		.set_delay(delay_sec).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	tw.tween_property(cell, "scale", target_sv, sec) \
-		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		.set_delay(delay_sec).set_trans(scale_trans).set_ease(Tween.EASE_OUT)
 	tw.tween_property(face, "position", target_pos, sec) \
-		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		.set_delay(delay_sec).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	tw.tween_property(face, "rotation", target_rot, sec) \
-		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		.set_delay(delay_sec).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	tw.tween_property(face, "scale", target_sv, sec) \
-		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		.set_delay(delay_sec).set_trans(scale_trans).set_ease(Tween.EASE_OUT)
 	_hover_tweens[i] = tw
 
 
@@ -801,6 +828,8 @@ func animate_deck_in() -> void:
 	#   否则它们会和入场 Tween 同时写同一张牌的 position，表现就是牌重叠 / 乱飞。
 	if _drag_tween != null and _drag_tween.is_running():
 		_drag_tween.kill()
+	if _drag_scale_tween != null and _drag_scale_tween.is_running():
+		_drag_scale_tween.kill()
 	if _restore_tween != null and _restore_tween.is_running():
 		_restore_tween.kill()
 	if _success_tween != null and _success_tween.is_running():
@@ -913,10 +942,21 @@ func _update_drag_position(i: int, viewport_pos: Vector2) -> void:
 		# ★★ 2026.11.17（用户口径）：拖起来的那一刻，**其余手牌往屏幕下方沉 + 缩小**。
 		#   松手时在 `_finish_card_drag()` 里反向播回来。
 		_set_deck_tucked(true, i, true)
-		# 被悬停的牌是放大态；拖起来必须回到 1.0，否则整张牌会拖着放大版走。
-		_cells[i].scale = Vector2.ONE
-		_card_faces[i].scale = Vector2.ONE
+		# ★★ 2026.11.19：被悬停的牌是放大态；拖起来要回到 1.0，否则整张牌会拖着
+		#   放大版走。但**不再一帧硬缩**（用户报的「卡牌会突变大小」）——
+		#   这里缓动 0.12s 收回；若中途松手被拒，`_animate_card_back()` 会杀掉这条
+		#   Tween，并从当时的大小**线性**收到 1.0。
+		if _drag_scale_tween != null and _drag_scale_tween.is_running():
+			_drag_scale_tween.kill()
+		if absf(_cells[i].scale.x - 1.0) > 0.001:
+			_drag_scale_tween = create_tween().set_parallel(true)
+			_drag_scale_tween.tween_property(_cells[i], "scale", Vector2.ONE,
+				DRAG_SCALE_SEC).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+			_drag_scale_tween.tween_property(_card_faces[i], "scale", Vector2.ONE,
+				DRAG_SCALE_SEC).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 		_drag_face_alpha = -1.0
+		_drag_last_pointer = viewport_pos
+		_drag_tilt = 0.0
 		if _deck_tween != null and _deck_tween.is_running():
 			_deck_tween.kill()
 		_cells[i].z_index = UiLayoutRes.CARD_SLOTS * 2 + 4
@@ -936,10 +976,15 @@ func _update_drag_position(i: int, viewport_pos: Vector2) -> void:
 	if not _dragging_card:
 		return
 	var local: Vector2 = get_global_transform_with_canvas().affine_inverse() * viewport_pos
-	_cells[i].rotation = 0.0
+	# ★★ 2026.11.19：横向速度 → 轻微倾斜（拖拽的「蓄力感」）。
+	var dx := viewport_pos.x - _drag_last_pointer.x
+	_drag_last_pointer = viewport_pos
+	var want_tilt := clampf(dx * DRAG_TILT_PER_PX, -DRAG_TILT_MAX, DRAG_TILT_MAX)
+	_drag_tilt = lerpf(_drag_tilt, want_tilt, 0.35)
+	_cells[i].rotation = _drag_tilt
 	var hold: Vector2 = _cells[i].size * 0.5
 	_cells[i].position = local - hold
-	_card_faces[i].rotation = 0.0
+	_card_faces[i].rotation = _drag_tilt
 	_card_faces[i].position = _cells[i].position
 	# ★ 拖回手牌范围 ⇒ 卡面逐渐显示出来（拖到地图上停在 0.30）
 	#   ★★ 2026.11.15：将领牌也走同一条 —— 否则整张牌会盖住区划中心那一圈。
@@ -997,12 +1042,11 @@ func _finish_card_drag(i: int, viewport_pos: Vector2 = Vector2.ZERO) -> void:
 		# ★★ 2026.11.16 修 bug：松手后按钮不再收 mouse_exited，清掉拖拽期间残留的悬停填充。
 		if i >= 0 and i < _cells.size():
 			FillButtonRes.clear_hover_in(_cells[i])
-			# ★★ 2026.11.17 修 bug：拖牌松手时必须把**缩放**也复位。
-			#   建筑牌拖到同种建筑上升级时，HUD 会在同一条调用栈里刷新手牌；
-			#   如果后续动画被 `set_entries()` 提前掐掉，残留的悬停 1.5 倍会被留在牌上。
-			#   这里统一回到 1.0，成功 / 返程两条动画都从正确尺寸开始。
-			_cells[i].scale = Vector2.ONE
-			_card_faces[i].scale = Vector2.ONE
+			# ★★ 2026.11.19：这里**不再硬写 scale = 1.0**。
+			#   旧版在松手时先把牌缩回 1.0，紧接着 `_animate_card_back()` 又把 1.0
+			#   当作返程起点 ⇒ 玩家看到的是「牌一松手就突然变小」。
+			#   现在把缩放交给两条收尾动画：成功 = 新卡从下方升起；
+			#   被拒 = `_animate_card_back()` 从当前大小**线性**收到 1.0。
 	_drag_index = -1
 	_dragging_card = false
 	_drag_face_alpha = -1.0
@@ -1090,14 +1134,14 @@ func _animate_card_back(i: int) -> void:
 	var start_face: Vector2 = _card_faces[i].position
 	var start_rot: float = _cells[i].rotation
 	var start_face_rot: float = _card_faces[i].rotation
-	# ★★ 2026.11.18：回手时**保留松手那一刻的缩放**，让它随「离槽位的距离」慢慢收到 1.0。
+	# ★★ 2026.11.18：回手时**保留松手那一刻的缩放**，让它随返程慢慢收到 1.0。
 	#   旧版在这里直接写 `scale = ONE` ⇒ 手牌在以悬停 1.5 倍飞回时会一帧硬缩，
 	#   或者反过来在末帧硬切；两种都是用户看到的「到位后突然缩小」。
-	var start_scale_s: float = _cells[i].scale.x
-	var start_face_scale_s: float = _card_faces[i].scale.x
 	var ordinal: int = slot["ordinal"]
 	if _drag_tween != null and _drag_tween.is_running():
 		_drag_tween.kill()
+	if _drag_scale_tween != null and _drag_scale_tween.is_running():
+		_drag_scale_tween.kill()
 	if _drag_fade_tween != null and _drag_fade_tween.is_running():
 		_drag_fade_tween.kill()
 	_drag_tween = create_tween().set_parallel(true)
@@ -1121,20 +1165,20 @@ func _animate_card_back(i: int) -> void:
 		_card_faces[i].pivot_offset = piv
 		var cell_pos := start_cell.lerp(r.position, t)
 		var face_pos := start_face.lerp(r.position, t)
-		# 缩放 = 1.0 + (起始缩放 - 1.0) × 剩余进度。
-		# 位置用的是同一条 CUBIC ease-out 路径，所以 `1 - t` 就是「离槽位的剩余距离比例」；
-		# 即使牌松手时已经贴在槽位上（起终点重合），也会按时间平滑收完，而不是留到末帧硬切。
-		var k := clampf(1.0 - t, 0.0, 1.0)
-		var s := lerpf(1.0, start_scale_s, k)
-		var sf := lerpf(1.0, start_face_scale_s, k)
 		_cells[i].position = cell_pos
 		_card_faces[i].position = face_pos
-		_cells[i].scale = Vector2(s, s)
-		_card_faces[i].scale = Vector2(sf, sf)
 		_cells[i].rotation = lerp_angle(start_rot, rr, t)
 		_card_faces[i].rotation = lerp_angle(start_face_rot, rr, t)
 	, 0.0, 1.0, DRAG_RETURN_SEC) \
 		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	# ★★ 2026.11.19（用户口径）：「卡牌拒绝使用回手时应当在移动时**线性**缩小」。
+	#   缩放不再跟着上面那条 ease-out 的 t 走（那样是先猛缩、后拖尾巴），
+	#   而是单开两条 TRANS_LINEAR：位置照旧缓动，尺寸在同样的 0.20s 里匀速收到 1.0。
+	#   ⚠️ 起点就是松手那一刻的缩放（Tween 自己取初值），所以中途不会再跳一下。
+	_drag_tween.tween_property(_cells[i], "scale", Vector2.ONE, DRAG_RETURN_SEC) \
+		.set_trans(Tween.TRANS_LINEAR)
+	_drag_tween.tween_property(_card_faces[i], "scale", Vector2.ONE, DRAG_RETURN_SEC) \
+		.set_trans(Tween.TRANS_LINEAR)
 	# 返程用 CUBIC 而不是 BACK：BACK 会先冲过槽位再弹回来，看起来就是「回到手牌后又移了一下」。
 	_drag_tween.tween_property(_cells[i], "modulate:a", 1.0, 0.12)
 	_drag_tween.tween_property(_card_faces[i], "modulate:a", 1.0, 0.12)
@@ -1204,6 +1248,8 @@ func play_drag_success(i: int, screen_pos: Vector2, only_this_card: bool = true)
 		_success_tween = null
 	if _drag_tween != null and _drag_tween.is_running():
 		_drag_tween.kill()
+	if _drag_scale_tween != null and _drag_scale_tween.is_running():
+		_drag_scale_tween.kill()
 	if _drag_fade_tween != null and _drag_fade_tween.is_running():
 		_drag_fade_tween.kill()
 	var cell := _cells[i]
@@ -1247,15 +1293,21 @@ func play_drag_success(i: int, screen_pos: Vector2, only_this_card: bool = true)
 			animate_deck_in())
 
 
-## 只把一张牌在它**当前**扇形槽位淡回来：不动其他牌、不做整手牌入场。
-## 建筑牌生效后用 —— 用户口径「生效后不能全部刷新」。
+## ★★ 2026.11.19（用户口径）：牌被打出后，**在屏幕下方生成一张正常大小的卡**，
+##   再把它上移到自己的手牌槽位 —— 不再「原地淡回来」。
+##
+## 为什么起点放在牌区高度之外：命令卡控件就贴在屏幕底边（`CARD_RECT` 的底边 = 屏幕底），
+## 本地坐标 y > `CARD_RECT.size.y` 就是**屏幕外面**。整张牌从那里升上来，
+## 玩家看到的是「新牌从底下抽出来」，而不是同一张牌凭空一闪。
+##
+## ★ 只动这一张：其他牌的位置 / 尺寸 / 层级一概不碰（用户口径「生效后不能全部刷新」）。
+## ★ 起点也是 1.0 倍：用户明确要「正常大小」，不再有缩放造成的「突变大小」。
 func _restore_card_at_slot(i: int) -> void:
 	if i < 0 or i >= _cells.size():
 		return
 	# ★★ 2026.11.17：回槽位期间 / 落地后不要让悬停把牌重新放大到 1.5 倍。
 	#   用户报的是「升级牌回到手牌仍保持 1.5 倍」——原因是牌回手时指针正好在它上面，
-	#   mouse_entered 起了悬停 Tween，而 `_restore_tween` 只写 alpha、不写 scale。
-	#   抑制到下一次 `mouse_exited`（见 `_on_cell_mouse_exited`）为止。
+	#   mouse_entered 起了悬停 Tween，而这里只写位置。抑制到下一次 `mouse_exited` 为止。
 	_hover_suppressed_index = i
 	if _hover_index == i:
 		_hover_index = -1
@@ -1267,35 +1319,50 @@ func _restore_card_at_slot(i: int) -> void:
 	var ordinal: int = slot["ordinal"]
 	var cell := _cells[i]
 	var face := _card_faces[i]
-	cell.position = r.position
-	cell.rotation = rot
-	cell.size = r.size
-	cell.z_index = ordinal * 2 + 1
-	cell.modulate.a = 0.0
-	cell.scale = Vector2.ONE
-	cell.pivot_offset = UiLayoutRes.card_pivot(cell.size)
-	face.position = r.position
-	face.rotation = rot
-	face.size = r.size
-	face.z_index = ordinal * 2
-	face.modulate.a = 0.0
-	face.scale = Vector2.ONE
-	face.pivot_offset = UiLayoutRes.card_pivot(face.size)
 	if _restore_tween != null and _restore_tween.is_running():
 		_restore_tween.kill()
+	if _drag_tween != null and _drag_tween.is_running():
+		_drag_tween.kill()
+	if _success_tween != null and _success_tween.is_running():
+		_success_tween.kill()
+	var start := Vector2(r.position.x, UiLayoutRes.CARD_RECT.size.y + 8.0)
+	var start_rot := 0.0
+	for node in [cell, face]:
+		var c := node as Control
+		c.position = start
+		c.rotation = start_rot
+		c.size = r.size
+		c.scale = Vector2.ONE
+		c.pivot_offset = UiLayoutRes.card_pivot(r.size)
+		c.modulate.a = 1.0
+	cell.z_index = ordinal * 2 + 1
+	face.z_index = ordinal * 2
 	_restore_tween = create_tween().set_parallel(true)
-	_restore_tween.tween_property(cell, "modulate:a", 1.0, 0.12)
-	_restore_tween.tween_property(face, "modulate:a", 1.0, 0.12)
-	# ★★ 2026.11.17：落地再兜一次缩放 —— 即使途中被别的 Tween 写了 1.5 倍，回手完成时也归 1.0。
+	for node in [cell, face]:
+		var c := node as Control
+		_restore_tween.tween_property(c, "position", r.position, CARD_RISE_SEC) \
+			.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		_restore_tween.tween_property(c, "rotation", rot, CARD_RISE_SEC) \
+			.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+	# ★★ 落地再兜一次：位置 / 旋转 / 尺寸 / 缩放全部对齐当前槽位。
 	_restore_tween.finished.connect(func() -> void:
 		if not is_instance_valid(self) or i < 0 or i >= _cells.size() or _dragging_card:
 			return
-		if _hover_index == i:
+		var now := _fan_slot_of(i)
+		if now.is_empty():
 			return
+		var nr: Rect2 = now["rect"]
+		var nr_rot: float = now["rot"]
+		_cells[i].position = nr.position
+		_cells[i].rotation = nr_rot
+		_cells[i].size = nr.size
 		_cells[i].scale = Vector2.ONE
+		_cells[i].pivot_offset = UiLayoutRes.card_pivot(nr.size)
+		_card_faces[i].position = nr.position
+		_card_faces[i].rotation = nr_rot
+		_card_faces[i].size = nr.size
 		_card_faces[i].scale = Vector2.ONE
-		_cells[i].pivot_offset = UiLayoutRes.card_pivot(_cells[i].size)
-		_card_faces[i].pivot_offset = UiLayoutRes.card_pivot(_card_faces[i].size)
+		_card_faces[i].pivot_offset = UiLayoutRes.card_pivot(nr.size)
 	, CONNECT_ONE_SHOT)
 
 
@@ -1659,6 +1726,8 @@ func _sync_cell_style(i: int) -> void:
 	var bg0: Color = _cell_bg0[i]
 	sb.border_color = bc0.lerp(hot, g)
 	sb.bg_color = Color(bg0.r, bg0.g, bg0.b, bg0.a * (1.0 - g))
+	# ★★ 2026.11.19：悬停时描边从 2px 加到 3px，牌「顶起来」时更有存在感。
+	sb.set_border_width_all(2 + int(round(g)))
 
 
 ## 给第 i 格换图标（`mask` 为空且 `role` 也为空 = 这一格不画图标）。

@@ -379,16 +379,17 @@ func finish_construction() -> void:
 
 ## 该建筑**整格**是否阻挡某个阵营的单位（只给 A* 用）。
 ##
-## ★★ 判定基准是 `same_side_for_attack(faction, owner)`（「是不是自己人**或盟友**」），
-##    **不是** `faction == 'player'`，也**不再是**严格的 `same_side`。
-##    · 同阵营：城墙 `blocks_player=false` ⇒ 放行（与从前一致）；
-##    · 盟友：现在也走 `blocks_player` ⇒ 放行（「同边的单位可以跨越同边的建筑」）；
+## ★★ 2026.11.19（用户口径）：**城墙不再区分阵营** —— 对玩家、盟友、敌人一律整格阻挡。
+##    这是写死在墙类上的规则，不依赖 config 的 `blocks_player`（避免新墙类型漏配又变成「自己人能穿」）。
+## ★ 其它建筑仍按 `same_side_for_attack(faction, owner)` 判：
+##    · 同阵营 / 盟友：走 `blocks_player`（大本营 / 箭塔默认放行）；
 ##    · 其它（敌对 / 中立）：走 `blocks_enemy` ⇒ 挡死。
-##    ⚠️ 旧写法用 `same_side`（严格 a==b）时盟友互相阻挡；本轮按需求改成盟友也放行。
 ##
 ## ⚠️ 大本营 / 箭塔在这里**对谁都返回 false**：它们本体小于一格，整格不封，
 ##    真正的阻挡交给 body_blocks() + 移动碰撞（见文件头）。
 func blocks(faction: String) -> bool:
+	if is_wall_building():
+		return true
 	if FactionRes.same_side_for_attack(faction, owner):
 		return bool(def().get("blocks_player", true))
 	return bool(def().get("blocks_enemy", true))
@@ -396,8 +397,11 @@ func blocks(faction: String) -> bool:
 
 ## 该建筑的**本体**是否阻挡某个阵营（只给移动碰撞用）。
 ## 城墙 body_scale = 1.0，所以它这里与 blocks() 等价；大本营 / 箭塔只挡敌方。
-## ★ 判据与 `blocks()` 逐字一致：`same_side_for_attack`（同阵营**或盟友**放行）。
+## ★★ 2026.11.19：城墙本体同样**对任何阵营都挡**（见 `blocks()`）。
+## ★ 其它建筑仍按 `same_side_for_attack`（同阵营 / 盟友放行）。
 func body_blocks(faction: String) -> bool:
+	if is_wall_building():
+		return true
 	if FactionRes.same_side_for_attack(faction, owner):
 		return bool(def().get("body_blocks_player", false))
 	return bool(def().get("body_blocks_enemy", true))

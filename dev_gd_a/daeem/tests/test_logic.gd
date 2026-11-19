@@ -166,13 +166,15 @@ func _test_terrain_and_building_passability(world, cfg) -> void:
 		var wall = world.add_building("wall", wall_tile.x, wall_tile.y, "p1")
 		ok(wall != null, "城墙建造成功")
 		eq(wall.hp, 300.0, "城墙满血 300")
-		ok(not wall.blocks("p1"), "城墙对己方放行（blocks = false）")
+		# ★★ 2026.11.19：城墙不再区分阵营，对任何单位都阻挡。
+		ok(wall.blocks("p1"), "城墙对己方也阻挡（blocks = true）")
 		ok(wall.blocks("enemy"), "城墙对敌方阻挡（blocks = true）")
-		ok(PathfinderRes.passable(world.map, world.buildings, cfg, wall_tile.x, wall_tile.y, "p1"),
-			"己方可以把城墙那一格当通路")
+		ok(not PathfinderRes.passable(world.map, world.buildings, cfg, wall_tile.x, wall_tile.y, "p1"),
+			"己方也不能进城墙那一格")
 		ok(not PathfinderRes.passable(world.map, world.buildings, cfg, wall_tile.x, wall_tile.y, "enemy"),
 			"敌方不能进城墙那一格")
-		ok(wall.blocks("p2") or wall.blocks("enemy"), "非同一方的阵营被城墙阻挡")
+		ok(wall.body_blocks("p1") and wall.body_blocks("enemy"),
+			"城墙本体对双方都阻挡")
 		world.remove_building(wall, false)
 
 	var t2 = _find_free_tile(world, cfg, Vector2i(base_b.tx + 2, base_b.ty + 2))
@@ -244,8 +246,8 @@ func _test_pathfinding(world, cfg) -> void:
 		ok(upper.y < 9 and lower.y > 9, "城墙用例：取到的两点确实被墙分在两侧")
 		ok(PathfinderRes.find_path(world.map, world.buildings, cfg, upper, lower, "enemy") == null,
 			"★ 整条城墙把敌方路线切断（上下两半不可达）")
-		ok(PathfinderRes.find_path(world.map, world.buildings, cfg, upper, lower, "p1") != null,
-			"同一条城墙对己方完全放行（还能穿过去）")
+		ok(PathfinderRes.find_path(world.map, world.buildings, cfg, upper, lower, "p1") == null,
+			"★★ 同一条城墙对己方也切断（不再区分阵营）")
 	var hole = wall_row[wall_row.size() / 2]
 	world.remove_building(hole, false)
 	ok(PathfinderRes.passable(world.map, world.buildings, cfg, hole.tx, hole.ty, "enemy"),
@@ -385,8 +387,8 @@ func _test_segment_clear(world, cfg) -> void:
 		var right = Vector2(wt.x + 1.5, wt.y + 0.5)
 		ok(not PathfinderRes.segment_clear(world.map, world.buildings, cfg, left, right, "enemy"),
 			"直线穿过城墙时对敌方为假")
-		ok(PathfinderRes.segment_clear(world.map, world.buildings, cfg, left, right, "p1"),
-			"同一条直线对己方为真（城墙放行）")
+		ok(not PathfinderRes.segment_clear(world.map, world.buildings, cfg, left, right, "p1"),
+			"★★ 同一条直线对己方也为假（城墙不分阵营）")
 		world.remove_building(wall, false)
 
 	var corner = _find_corner_gap(world)
@@ -885,24 +887,16 @@ func _test_build_commands(world, cfg) -> void:
 			"★★ 非建造点位不能建（拒因 = not_build_point）")
 		ok(w.building_at(off_point.x, off_point.y) == null, "那一格上什么都没建出来")
 
-	# ★★ 城墙：落点是区划中心，**一张牌建整圈**，被地形 / 建筑挡住的格子跳过。
-	var wall_anchors: Array = w.build_anchors_for("wall", "p1")
-	ok(not wall_anchors.is_empty(), "城墙用例：己方有区划中心可以围")
-	if not wall_anchors.is_empty():
-		var wa: Dictionary = wall_anchors[0]
-		var center: Vector2i = wa["tile"]
-		var walls_before := _count_type(w, "wall", "p1")
-		var wall_cmd := {"kind": "build", "build_type": "wall",
-			"tx": center.x, "ty": center.y, "zone_id": int(wa["zone_id"]), "faction": "p1"}
-		ok(CommandRes.apply(w, cfg, wall_cmd), "★★ 墙牌落在区划中心上被接受")
-		var built: int = _count_type(w, "wall", "p1") - walls_before
-		ok(built >= 1 and built <= 8, "★★ 一张牌把整圈建上（实际 %d 格）" % built)
-		ok(not CommandRes.apply(w, cfg, wall_cmd),
-			"★★ 这一圈建满之后不能再建（wall_no_space）")
-		# 城墙**不能**落在非区划中心的格子上（哪怕那一格是建造点位）
-		var bad: Vector2i = tile
-		ok(w.build_reject_reason("wall", bad.x, bad.y, "p1") == "not_zone_center",
-			"★★ 城墙的落点必须是区划中心（普通点位 → not_zone_center）")
+	# ★★ 2026.11.19（用户口径）：城墙只能由战役编辑器预置，局内不能建造。
+	eq(w.build_anchors_for("wall", "p1").size(), 0, "★★ 木墙没有建造锚点")
+	var walls_before := _count_type(w, "wall", "p1")
+	var wall_cmd := {"kind": "build", "build_type": "wall",
+		"tx": base_b.tx, "ty": base_b.ty, "faction": "p1"}
+	ok(not CommandRes.apply(w, cfg, wall_cmd),
+		"★★ 墙类建造命令一律被拒（哪怕落点在自己地盘里）")
+	eq(w.build_reject_reason("wall", base_b.tx, base_b.ty, "p1"), "wall_preplaced",
+		"★★ 拒因 = wall_preplaced")
+	eq(_count_type(w, "wall", "p1"), walls_before, "★★ 没有建出任何墙")
 
 	# ★★ 不能在自己的区划之外建造 —— 否则玩家能在中立地上立一栋楼，
 	#    让那一整块地「立即归己」（既成事实扩张，就是本次要修的 bug）。

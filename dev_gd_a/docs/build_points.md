@@ -93,9 +93,8 @@
 
 | 码 | 含义 |
 |---|---|
-| `not_build_point` | 非城墙建筑，但这一格不是任何区划的建造点位 |
-| `not_zone_center` | 城墙，但落点不是某个区划中心 |
-| `wall_no_space` | 城墙环一圈全被地形 / 建筑挡住，没有可建位置 |
+| `not_build_point` | 可建造建筑，但这一格不是任何区划的建造点位 |
+| `wall_preplaced` | ★ 城墙（木墙 / 石墙）不允许局内建造：只能由战役编辑器预先摆放 |
 | `occupied_or_terrain` | 地形不可建 / 已被建筑占住 |
 | `not_in_zone` | 不是自己的区划 |
 | `under_capture` | 区划正被敌方踩中心（整块禁建） |
@@ -105,15 +104,20 @@
 - 「自己的区划」= `world.accepts_owner(zone.owner, faction)`；
 - **拆掉建筑后点位仍然存在**，可以再建。
 
-### 2.2 城墙：一张牌围一圈
+### 2.2 城墙：只能由战役编辑器预置
 
-- 落点 = 某个**区划中心格**；
-- 建的位置 = `world.wall_ring_buildable_tiles(zid, faction)`：
-  几何环（`zone.wall_ring_tiles_of()`，默认 1 层 = 3×3 外圈 8 格）逐格过滤：
-  在图上、在演出边界内、可通行、没被建筑占住、**属于自己阵营的区划**、没被敌方踩中心；
-- **一次 `build` 命令把这一圈建满**，花费按**一张牌**算；
-- 被山脉 / 水域 / 已有建筑 / 邻区挡住的格子直接跳过；
-- 一圈没有可建位置时拒绝（`wall_no_space`），不扣钱。
+- ★★ 2026.11.19（用户口径）：**木墙 / 石墙不能在局内建造**（玩家与 AI 都不行），
+  只能由设计师在战役编辑器 / 关卡地图数据里预先摆放。
+- 权威判据：`world.build_reject_reason()` 对任何 `BuildingRes.is_wall_type()` 返回
+  `wall_preplaced`；`command_processor.apply_build()` 也直接拒绝。
+- 建筑页不再出现墙牌（`hud._build_entries()` 过滤墙类），
+  `world.build_anchors_for()` 对墙类返回空数组。
+- 预置仍走 `add_building()` / 关卡 `start_buildings` / 地图编辑器，不受影响。
+- ★★ **阻挡规则**：城墙对**所有阵营**的单位都阻挡移动（格级 + 本体级，
+  `building.blocks()` / `body_blocks()` 对墙类硬编码 `true`）；
+  但**不阻挡远程攻击** —— 投掷物只沿「射手 → 目标」飞行，不与中途建筑碰撞。
+- 旧版「一张墙牌围区划中心一圈」的运行时逻辑保留为内部工具
+  （`world.build_wall_ring()` / `wall_ring_buildable_tiles()`），但**没有游戏入口**。
 
 ### 2.3 边缘区
 
@@ -131,7 +135,7 @@
 |---|---|---|
 | `points_per_zone` | 2 | 关卡没填 `build_point_count` 时的默认生成数量 |
 | `drop_radius_tiles` | 1.5 | 拖牌时指针离点位多远算「落在它上面」 |
-| `wall_ring_radius` | 1 | 城墙环层数（1 = 中心 3×3 外圈 8 格） |
+| `wall_ring_radius` | 1 | 城墙环几何层数（1 = 中心 3×3 外圈 8 格；★ 仅编辑器 / 预置校验用，局内不建墙） |
 
 装载进 `ConfigRes`：`build_points_per_zone` / `build_drop_radius_tiles` /
 `build_wall_ring_radius`。
@@ -141,8 +145,8 @@
 ## 4. 界面（拖拽建造）
 
 1. 从手牌拖起建筑牌 → `hud._begin_build_drag()`：
-   - `world.build_anchors_for(type, my_faction)` 算出所有可落点：
-     普通建筑 = 己方区划里「空着的点位」；城墙 = 己方区划的**中心格**；
+   - `world.build_anchors_for(type, my_faction)` 算出所有可落点
+     = 己方区划里「空着的点位」（城墙没有锚点 / 没有墙牌）；
    - `overlay.drag_anchor_tiles` 拿到同一份列表 → 逐个画小方框 + 中心亮点。
 2. 指针移动 → `hud._update_build_drag_preview()`：
    - 若指针与某锚点中心的世界距离 ≤ `drop_radius_tiles`，吸附到最近的那个；
@@ -160,7 +164,8 @@
 `logic/ai_build.gd` 与玩家走同一条命令路径：
 
 - 箭塔 / 粮田 / 房屋 / 矿脉：只从 `world.build_points_of_zone(zid)` 里挑空位；
-- 城墙：`_try_wall_ring()` 发一条「以区划中心为落点」的 build 命令；
+- ★★ 2026.11.19：**AI 不再造城墙** —— `_try_wall()` / `_try_wall_ring()` 是空实现，
+  `ai.commander.build.wall_enabled` 默认 `false`；
 - 经济建筑与箭塔共用一个区划的点位；`_resource_building_capacity()` 按**实时空点位数**
   计算，**不假设每区 2 个**；
 - 点位数量由关卡决定，AI 的「单区划多塔 / 多资源建筑」目标会被实际点位数夹住。

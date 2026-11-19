@@ -228,7 +228,10 @@ const CARD_ROWS := 3
 const CARD_SLOTS := CARD_COLS * CARD_ROWS
 const CARD_FAN_MAX_SIZE := Vector2(142.0, 206.0)
 const CARD_FAN_BASELINE := 56.0
-const CARD_FAN_OVERLAP_RATIO := 0.15
+## ★★ 2026.11.19：重叠略减（0.15 → 0.12）—— 每张牌露出更多牌面，扇形轮廓更清楚。
+const CARD_FAN_OVERLAP_RATIO := 0.12
+## ★★ 2026.11.19：外圈牌比中间牌**下沉**多少（形成弧线，不再全部底边一条直线）。
+const CARD_FAN_ARC_PX := 6.0
 ## 九个格子的键位：按参考图排（上排 QWE / 中排 ASD / 下排 ZXC）
 const CARD_KEYS := ["Q", "W", "E", "A", "S", "D", "Z", "X", "C"]
 ## ★ 键位 → **视觉格子序号**（0..8）。命令卡与科技九格共用同一套。
@@ -759,10 +762,12 @@ static func card_fan_local(visible_index: int, visible_count: int) -> Rect2:
 	var overlap := w * CARD_FAN_OVERLAP_RATIO if n > 1 else 0.0
 	var total := float(n) * w - float(n - 1) * overlap
 	var x := (CARD_RECT.size.x - total) * 0.5 + float(visible_index) * (w - overlap)
-	# ★★ 2026.11.18：所有牌的**底边中点**落在同一条基线上。
-	#   旧版按 `abs(i-mid)*5` 把外圈牌往下压，9 张时整排会「两头垂、中间拱」；
-	#   旋转改成绕牌底中点之后，扇形感全部由旋转给出，基线就该是平的。
+	# ★★ 2026.11.19：底边不再完全平 —— 外圈牌最多下沉 `CARD_FAN_ARC_PX`，
+	#   形成一条很缓的弧线；中间牌保持原位。旋转仍绕牌底中点，所以不会「风车」。
 	var y := CARD_RECT.size.y - CARD_FAN_BASELINE - CARD_FAN_MAX_SIZE.y
+	var mid := (float(n) - 1.0) * 0.5
+	var edge := 0.0 if mid <= 0.0 else absf(float(visible_index) - mid) / mid
+	y += edge * CARD_FAN_ARC_PX
 	return Rect2(x, y, w, CARD_FAN_MAX_SIZE.y)
 
 
@@ -773,7 +778,8 @@ static func card_fan_local(visible_index: int, visible_count: int) -> Rect2:
 ##   现在按「最外那张正好 ±14°」反算步进：3 张还是 ±8°，7 张 ±14°，9 张 ±14° 但每张
 ##   角度均匀（3.5°/张），不再有并排平行的牌。
 const CARD_FAN_STEP_DEG := 8.0
-const CARD_FAN_MAX_ANGLE_DEG := 14.0
+## ★★ 2026.11.19：张角 14° → 18°，手牌更像一把展开的扇子。
+const CARD_FAN_MAX_ANGLE_DEG := 18.0
 
 
 static func card_fan_rotation(visible_index: int, visible_count: int) -> float:
@@ -792,11 +798,11 @@ static func card_fan_rotation(visible_index: int, visible_count: int) -> float:
 ## 「距离从 2 变 3」而回位一次 —— 用户明确说这种「远处的牌也跟着动」很怪。
 ## ⇒ 同侧统一 `CARD_HOVER_PUSH_PX`：换到相邻牌时，同侧那些牌的距离不变、位置也不变，
 ##   只有「刚失去悬停的牌」和「刚获得悬停的牌」在动。
-const CARD_HOVER_PUSH_PX := 34.0
+const CARD_HOVER_PUSH_PX := 42.0
 
 ## 悬停时这张牌**向上抬**多少（设计像素）。命令卡与科技页共用这一个数，
 ## 免得同一套手牌在两个页签里抬得高矮不一。
-const CARD_HOVER_RAISE_PX := 22.0
+const CARD_HOVER_RAISE_PX := 28.0
 
 
 ## 第 `ordinal` 张牌相对悬停牌 `hover_ordinal` 的横向让开量（设计像素）。
@@ -817,9 +823,9 @@ static func card_hover_push(ordinal: int, hover_ordinal: int) -> float:
 ##
 ## ★ 缩放绕**中心**做（与悬停放大同一条补偿写法，见 `card_tuck_offset`），
 ##   不用 `pivot_offset` —— 扇形里的牌是斜的，改 pivot 会连带改旋转观感。
-const CARD_TUCK_SCALE := 0.82
+const CARD_TUCK_SCALE := 0.78
 ## 下沉的额外像素（设计像素，1080 高）
-const CARD_TUCK_PX := 40.0
+const CARD_TUCK_PX := 52.0
 ## 下沉 / 浮回的时长（秒）；比悬停抬起（0.14）慢一点，手感更「沉」
 const CARD_TUCK_SEC := 0.18
 

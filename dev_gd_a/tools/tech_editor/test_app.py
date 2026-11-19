@@ -263,7 +263,7 @@ def t_tech_pages_in_app(app) -> None:
     ok(app.commit_field(first_key), "把第 1 格清空")
     eq(app.model.value(app.current_page(), app._field_by_key[first_key]), "",
        "★ 清空写进 config 是空串（= 空位）")
-    ok("空位" in app.preview_text(), "★ 预览把空位画成「灰框不可点」")
+    ok("没有牌" in app.preview_text(), "★ 预览把空槽位说成「没有牌（扇形里不显示）」")
     app.set_entry(first_key, old)
     ok(app.commit_field(first_key), "把第 1 格放回去")
     app.select_page("tech:global")

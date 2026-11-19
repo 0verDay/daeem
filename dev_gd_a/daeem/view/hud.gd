@@ -15,10 +15,11 @@
 ##       ★ 数值那一块现在**只有正文**：顶上那行「详细信息」标题按需求去掉了
 ##     命令卡 3×3（每格 86.67，内容随页签实时切换）
 ##     页签（**按选中对象动态显示**：自己的部队 = 操作 / 单位；自己区划中心 = 招募；
-##           自己大本营 = 操作 / 科技；什么都没选中 = 建筑 + 科技；
-##           自己的无操作建筑 / 敌方 / 友方任何建筑单位 → **页签 + 命令卡整块隐藏**）
-##     ★ 科技页的九格**不是命令卡的内容**：它由 view/tech_grid.gd 画在最上层
-##       （同一个 3×3 几何），只有「科技」页才显示 —— 见 _refresh_tech_grid()
+##           自己大本营 = 操作 / 科技；自己的其它建筑 = 操作（里面的「拆除」牌）；
+##           什么都没选中 = 建筑 + 科技；敌方 / 友方任何建筑单位 → **页签 + 命令卡整块隐藏**）
+##     ★★ 2026.11.19：科技页现在是**一排扇形卡牌**（和手牌同一套 `card_fan_*` 几何，
+##       最多 9 张、从左到右按阶分组），不再是九宫格 —— 它由 view/tech_grid.gd 画在最上层，
+##       只有「科技」页才显示，见 _refresh_tech_grid()。
 ##
 ## ★ 仍然是纯表现：只读 world 与输入层的本地状态，从不改逻辑状态；
 ##   要改世界只有一条路 —— 让 input_controller 发命令（见 _on_card_entry）。
@@ -308,6 +309,11 @@ var _tab_key: String = ""
 ## ★ 为什么要记：玩家切到「单位」页排兵，点一下空地（没选中 → 建筑页），
 ##   再点回部队时不该被抢回「操作」页 —— 那会让「我刚看的那一页」凭空跳走。
 var _page_memory: Dictionary = {}
+## ★★ 2026.11.19：`_sync_tabs()` 正在按**选中对象**重排页签时为 true。
+##   此时 `page_tabs.set_pages()` 可能同步发 `page_changed`，但那不是玩家切页 ——
+##   它只应该**换内容**，不应该播「新牌从牌堆抽出」的入场动效。
+##   玩家自己点页签 / Tab 切页仍然走 `_on_page_changed()`，动效保留。
+var _sync_tabs_guard: bool = false
 
 
 func setup(p_cfg: ConfigRes, p_world, p_input, theme: Theme, p_camera_rig = null,
@@ -1131,13 +1137,31 @@ func _on_card_drag_finished(entry: Dictionary, screen_pos: Vector2, index: int) 
 		command_card.animate_card_back(index)
 		flash_reject()
 		return
+	# ★★ 2026.11.19（用户口径）：「拆除」牌**拖到地图上松手**才拆。
+	#   · 松回任意 UI 上 = 取消（与其它牌同一条判据，不会误拆）；
+	#   · 拖出 UI 松手 = 对**当前主选中建筑**发拆除命令；
+	#   · 成功 = 新卡从屏幕下方升回手牌位；失败 = 飞回原槽位 + 红闪。
+	if kind == "building_demolish":
+		if point_hits_ui(screen_pos):
+			command_card.animate_card_back(index)
+			return
+		if _on_building_action(entry):
+			command_card.play_drag_success(index, screen_pos, true)
+		else:
+			command_card.animate_card_back(index)
+			flash_reject()
+		return
 	# 其它牌（理论上没有拖拽语义）：在 UI 上松手一律当取消，不做任何动作 ——
 	# 免得「拖回手牌」被当成一次点击（与单位牌那个 bug 同源）。
 	if point_hits_ui(screen_pos):
 		command_card.animate_card_back(index)
 		return
-	_on_card_entry(entry)
-	command_card.animate_card_back(index)
+	# ★★ 2026.11.19（用户口径）：成功使用 → 新卡从屏幕下方升回手牌位；
+	#   失败 / 被拒 → 旧卡飞回槽位（线性缩回原尺寸）。
+	if _on_card_entry(entry):
+		command_card.play_drag_success(index, screen_pos, true)
+	else:
+		command_card.animate_card_back(index)
 
 
 func _on_tech_drag_finished(id: String, screen_pos: Vector2, _index: int) -> void:
@@ -1712,7 +1736,10 @@ func _build_squad_panel() -> void:
 
 func _on_page_changed(_page: String) -> void:
 	_page_memory[_tab_kind] = String(page_tabs.page())
-	_rebuild_card(true)
+	# ★★ 2026.11.19（用户报告）：选中另一个建筑 / 部队时，页签列表跟着换成
+	#   另一类，`set_pages()` 会同步发这个信号。那不是「玩家切页」，不该播
+	#   新牌入场动效；只有 `select_page()` / Tab 切页才播。
+	_rebuild_card(not _sync_tabs_guard)
 
 
 ## 「这一屏没有右下角」—— **页签列 + 命令卡整块隐藏**（不是立一颗空页签）。
@@ -1726,16 +1753,21 @@ func _hidden_command_ui_plan() -> Dictionary:
 
 
 ## 这一栋建筑现在有没有可操作项（决定右下角给不给页签）。
-##   · 大本营   → 有（`building_can_upgrade` 只对它能返回 true；操作页里是升级）
+##   · 大本营   → 有（操作页里是升级 / 重生状态）
 ##   · 区划中心 → 有（招募页；点中心走 `selected_zone` 那条路）
-##   · 其余建筑 → 没有（木墙 / 哨塔 / 石墙 / 警戒塔 / 粮田 / 房屋 / 矿脉…）
-##     ⇒ 选中它们时页签 + 命令卡整块隐藏。
+##   · 其余建筑 → ★ 2026.11.19 起也有：操作页里是「拆除」卡牌
+##     （木墙 / 哨塔 / 石墙 / 警戒塔 / 粮田 / 房屋 / 矿脉 / 教堂…）。
+##   ⚠️ 能显示操作页 ≠ 能拆：大本营由逻辑层硬拒，区划中心是无敌中立障碍，
+##      `_building_order_entries()` 只给非大本营挂「拆除」格。
 func _building_has_actions(b) -> bool:
 	if b == null or world == null:
 		return false
-	if String(b.type) == BuildingRes.TYPE_ZONE_CENTER:
-		return true
-	return world.building_can_upgrade(String(b.type))
+	if not b.alive:
+		return false
+	# 无敌的非中心建筑没有「拆除」入口。
+	if String(b.type) != BuildingRes.TYPE_ZONE_CENTER and b.is_invulnerable():
+		return false
+	return true
 
 
 ## 这一批单位是不是**全部属于本机那一方**。
@@ -1881,10 +1913,16 @@ func _sync_tabs() -> void:
 		# 把页签内部状态也清空：下次显示另一类选中时，`set_pages()` 才不会因为
 		# 「组合没变」而留着上一批按钮 / 上一页。它会同步发 page_changed → 重建命令卡；
 		# 命令卡的 visible 已在上面关掉（页签与命令卡是同一块「右下角」）。
+		_sync_tabs_guard = true
 		page_tabs.set_pages([], "")
+		_sync_tabs_guard = false
 		return
 	var preferred := String(_page_memory.get(_tab_kind, plan["default"]))
+	# ★★ 2026.11.19：这一段是「按选中对象换页签」，不是玩家主动切页 ——
+	#   `set_pages()` 里的同步 page_changed 不播入场动效（见 `_on_page_changed`）。
+	_sync_tabs_guard = true
 	page_tabs.set_pages(pages, preferred)
+	_sync_tabs_guard = false
 	_rebuild_card()
 
 
@@ -2109,7 +2147,7 @@ func _show_hover_card(d: Dictionary) -> void:
 	var was_visible: bool = hover_tip.showing()
 	hover_tip.show_card(String(d.get("title", "")), String(d.get("subtitle", "")),
 		d.get("cells", []), String(d.get("caption", "")), d.get("chips", []),
-		String(d.get("note", "")))
+		String(d.get("note", "")), String(d.get("body", "")))
 	if not was_visible:
 		_play_hover_slide_in()
 
@@ -2365,20 +2403,23 @@ func _hover_detail(src: String, entry: Dictionary) -> Dictionary:
 			return _hover_build(entry)
 		"recruit", "zone_recruit", "general_drag":
 			return _hover_recruit(entry)
-		"building_upgrade", "building_upgrade_cancel", "building_upgrade_max":
+		"building_upgrade", "building_upgrade_cancel", "building_upgrade_max", \
+				"building_demolish":
 			return _hover_building(entry)
 	return {}
 
 
-## 一份悬停内容：`{title, subtitle, cells, caption, chips, note}`
-## —— 版式照详情牌那套「分隔」写法（卡名 / 副标题 → 金线 → 造价格 → 特性小标题 + 胶囊），
+## 一份悬停内容：`{title, subtitle, cells, caption, chips, note, body}`
+## —— 版式照详情牌那套「分隔」写法（卡名 / 副标题 → 金线 → 造价格 → 说明段落 → 特性小标题 + 胶囊），
 ##   具体怎么画在 `view/hover_tip.gd`；本函数只负责「写什么」。
 ##   @param cells 造价格 `[{label, value}]`（0~3 格；空数组 = 不画那一排）
 ##   @param note  置灰原因（空串 = 不画；见 `_unit_lock_note` / `_tech_lock_note`）
+##   @param body  ★★ 2026.11.19：说明段落（长句，会折行；空串 = 不画）
 func _hover_card(title: String, subtitle: String, cells: Array = [],
-		caption: String = "", chips: Array = [], note: String = "") -> Dictionary:
+		caption: String = "", chips: Array = [], note: String = "",
+		body: String = "") -> Dictionary:
 	return {"title": title, "subtitle": subtitle, "cells": cells,
-		"caption": caption, "chips": chips, "note": note}
+		"caption": caption, "chips": chips, "note": note, "body": body}
 
 
 ## 条目里那一小份造价（招募表带过来的；缺了就是空 → 写成「免费」）
@@ -2571,12 +2612,19 @@ func _hover_building(entry: Dictionary) -> Dictionary:
 				"结果", ["重生队列 %d 位" % b.respawn_count()])
 		"building_upgrade_max":
 			return _hover_card(title, "已满级")
+		"building_demolish":
+			return _hover_card(title, "拆除", [], "结果", ["建筑移除"],
+				"把卡牌拖到地图上松手；不返还建造资源")
 	return _hover_card(title, "操作")
 
 
-## 科技九格 —— **效果胶囊**（`line` 就是 config 里那句短效果，如「远近免伤 +10%」）。
+## 科技九格 —— **效果胶囊**（`line` 就是 config 里那句短效果，如「远近免伤 +10%」）
+## + ★★ 2026.11.19 补回的**说明段落**（`desc` 那句完整说明）。
 ## ★★ 2026.11.18：科技不再持续耗金，悬停不再显示「金/秒」那一格。
 ##   已启用 / 不可取消写在 note 里；未启用但不可用的原因也写在 note 里。
+## ★★ 2026.11.19（用户口径）：「科技卡牌悬停的文本丢失了，补一下」——
+##   上一版重排版只留了短效果（`line`），`desc` 那段整段没画，牌面中间空一块。
+##   现在 `desc` 走悬停牌的说明段落（`hover_tip` 的 body，按可用高度折行）。
 func _hover_tech(entry: Dictionary) -> Dictionary:
 	var id := String(entry.get("id", ""))
 	var gps := float(entry.get("gold_per_sec", 0.0))
@@ -2590,7 +2638,7 @@ func _hover_tech(entry: Dictionary) -> Dictionary:
 	if line != "":
 		chips.append(line)
 	return _hover_card(String(entry.get("name", "")), "科技",
-		cells, "效果", chips, _tech_lock_note(entry))
+		cells, "效果", chips, _tech_lock_note(entry), String(entry.get("desc", "")))
 
 
 ## 这条科技现在**启不了**的一句话原因（能启时返回空串）。
@@ -2644,7 +2692,12 @@ func _build_entries() -> Array:
 		bclan = String(world.clan_of(String(world.my_faction)))
 	for d in cfg.buildable_building_defs_for(bclan):
 		var e: Dictionary = d
-		var tier := clampi(cfg.building_tier(String(e.get("id", ""))), 1, 3)
+		var bid := String(e.get("id", ""))
+		# ★★ 2026.11.19（用户口径）：城墙不再出现在建筑页 —— 木墙 / 石墙只能由
+		#   战役编辑器预先摆放，玩家和 AI 都没有建造入口。
+		if BuildingRes.is_wall_type(bid):
+			continue
+		var tier := clampi(cfg.building_tier(bid), 1, 3)
 		if not rows.has(tier):
 			rows[tier] = []
 		(rows[tier] as Array).append(e)
@@ -2909,12 +2962,11 @@ func _zone_center_building_of(zone):
 
 
 ## 建筑「操作」页的格子（**数据驱动**，文案与数值都来自 config）：
-##   · 大本营 → **升级**那一格（读条中则换成「取消升级」）；
-##   · 其它建筑 / 区划中心 → 没有操作页内容（区域特化机制已移除）。
+##   · 大本营 → **升级**那一格（读条中则换成「取消升级」；满级 / 重生中等状态照旧）；
+##   · 其它建筑 → ★ 2026.11.19 起多一张**「拆除」**卡牌（拖到地图上松手才拆）；
+##   · 区划中心 → 没有操作页内容（走招募页）。
 ##
-## ★ 三种状态互斥，所以最多 1 格：
-##     ① 读条中 → 只有「取消升级」那一格；
-##     ② 平常   → 升级那一格。
+## ★ 升级那几档互斥，所以大本营最多 1 格；非大本营则在升级格之外多挂一张拆除牌。
 ##   「读条中不给新的升级请求」这条规则由逻辑层把关（拒因 `busy`），
 ##   界面只是**不给入口**；两处都做是有意的。
 ##
@@ -2925,43 +2977,55 @@ func _building_order_entries(b = null, sel_zone = null) -> Array:
 	#   （那会报「同名变量」）；直接用参数缺省值兜底。
 	if b == null:
 		b = _primary_building()
-	if b == null:
+	if b == null or not b.alive:
 		return []
-	# 区划中心：没有操作（区域特化已移除）。
+	# 区划中心：没有操作（区域特化已移除；它也是无敌中立障碍，不可拆）。
 	if b.type == BuildingRes.TYPE_ZONE_CENTER:
 		return []
-	# 建筑：升级 / 取消升级
-	if not world.building_can_upgrade(b.type):
-		return []
-	if b.is_upgrading():
-		return [{
-			"type": "building_upgrade_cancel",
-			"name": "取消升级",
-			"desc": "取消这次升级，全额退还已经扣掉的粮食与黄金（当前等级不变）",
-		}]
-	# ★★ 大本营正在排队重生将领 → 不能开始新的升级（进行中的升级上面已经处理）。
-	if b.is_base() and b.is_respawning():
-		return [{
-			"type": "building_respawn",
-			"name": "重生中",
-			"desc": "大本营正在为重生的将领排队：%d 位，当前剩 %s 秒；完成前不能升级" % [
-				b.respawn_count(), _fmt_num(b.respawn_eta())],
-			"ready": false,
-		}]
-	var max_lv: int = world.building_level_cap(b)
-	if b.level >= max_lv:
-		return [{
-			"type": "building_upgrade_max",
-			"name": "已满级",
-			"desc": "%s 已经是最高等级（%d 级）" % [b.display_name(), max_lv],
-		}]
-	# ★★ 2026.11.17：升级是**瞬时**的 —— 文案不再提读条 / 取消退款（用户口径）。
-	return [{
-		"type": "building_upgrade",
-		"name": "升级%s" % b.display_name(),
-		"desc": "升到 %d 级：%s（立刻完成，血量补满）" % [
-			b.level + 1, _cost_text(world.building_upgrade_cost(b))],
-	}]
+	var out: Array = []
+	if world.building_can_upgrade(b.type):
+		if b.is_upgrading():
+			out.append({
+				"type": "building_upgrade_cancel",
+				"name": "取消升级",
+				"desc": "取消这次升级，全额退还已经扣掉的粮食与黄金（当前等级不变）",
+			})
+		elif b.is_base() and b.is_respawning():
+			# ★★ 大本营正在排队重生将领 → 不能开始新的升级（进行中的升级上面已经处理）。
+			out.append({
+				"type": "building_respawn",
+				"name": "重生中",
+				"desc": "大本营正在为重生的将领排队：%d 位，当前剩 %s 秒；完成前不能升级" % [
+					b.respawn_count(), _fmt_num(b.respawn_eta())],
+				"ready": false,
+			})
+		else:
+			var max_lv: int = world.building_level_cap(b)
+			if b.level >= max_lv:
+				out.append({
+					"type": "building_upgrade_max",
+					"name": "已满级",
+					"desc": "%s 已经是最高等级（%d 级）" % [b.display_name(), max_lv],
+				})
+			else:
+				# ★★ 2026.11.17：升级是**瞬时**的 —— 文案不再提读条 / 取消退款（用户口径）。
+				out.append({
+					"type": "building_upgrade",
+					"name": "升级%s" % b.display_name(),
+					"desc": "升到 %d 级：%s（立刻完成，血量补满）" % [
+						b.level + 1, _cost_text(world.building_upgrade_cost(b))],
+				})
+	# ★★ 2026.11.19（用户口径）：所有己方建筑（大本营 / 区划中心除外）都能拆。
+	#   拆除是**拖拽**动作：把这张牌拖出 UI、在地图上松手才发命令
+	#   （见 `_on_card_drag_finished` 的 `building_demolish` 分支）。
+	if not b.is_base() and not b.is_invulnerable():
+		out.append({
+			"type": "building_demolish",
+			"name": "拆除",
+			"desc": "把这张牌拖到地图上松手，拆除选中的%s（不返还建造资源）"
+				% b.display_name(),
+		})
+	return out
 
 
 ## 消耗的一行中文（「粮食 100 / 黄金 100」；空的一句「免费」）
@@ -3082,20 +3146,25 @@ func _on_card_entry(entry: Dictionary) -> bool:
 			# ★★ 2026.11.15：无选中时的「将领」页 —— 落点由**拖到哪里**决定，
 			#   所以点这一格不会有动作（与建筑页同一套口径：给一句能照做的提示）。
 			show_notice("将领牌要拖到己方区划中心的圈里松手：落点就是招募的区划")
-		"building_upgrade":
-			_on_building_action(entry)
-		"building_upgrade_cancel":
-			_on_building_action(entry)
+		"building_upgrade", "building_upgrade_cancel":
+			return _on_building_action(entry)
+		"building_demolish":
+			# ★ 拆除必须走**拖拽**：键盘 / 点击到这里只给一句可执行的提示，
+			#   避免一次误触就把建筑拆了。
+			show_notice("把「%s」拖到地图上松手才能拆除" % String(entry.get("name", "拆除")))
+			return false
 	return false
 
 
-## ★ 建筑「操作」页那几格 → 命令（升级 / 取消升级）。
+## ★ 建筑「操作」页那几格 → 命令（升级 / 取消升级 / 拆除）。
 ##
 ## ★ 与其它格子同一条约定：这里只调输入层的接口发命令，自己绝不碰逻辑状态。
 ##   目标（哪栋建筑）由**当前选中**决定：命令里带地块坐标。
 ## ★ 被拒时的提示走 `upgrade_rejected` 事件（game_scene → 左栏红字），
 ##   所以这里不为「钱不够 / 满级」再写一份判断 —— 规则只有逻辑层一份。
-func _on_building_action(entry: Dictionary) -> void:
+##
+## @return 命令是否发出（拆除拖拽成功与否靠它决定播哪种收尾动画）
+func _on_building_action(entry: Dictionary) -> bool:
 	var t := String(entry.get("type", ""))
 	# ★ 目标建筑：选中区划时 `selected_buildings` 是空的（两种选中互斥），
 	#   所以要先从区划的中心格反查出那栋建筑 —— 与操作页画格子用的是同一条判据。
@@ -3104,12 +3173,15 @@ func _on_building_action(entry: Dictionary) -> void:
 		b = _zone_center_building_of(input_ctrl.selected_zone)
 	if b == null:
 		show_notice("先选中一栋建筑")
-		return
+		return false
+	var ok := false
 	match t:
 		"building_upgrade":
-			input_ctrl.request_building_upgrade(b)
+			ok = input_ctrl.request_building_upgrade(b)
 		"building_upgrade_cancel":
-			input_ctrl.request_building_upgrade_cancel(b)
+			ok = input_ctrl.request_building_upgrade_cancel(b)
+		"building_demolish":
+			ok = input_ctrl.request_building_demolish(b)
 	# ★★ 点完立刻按**权威状态**重画一遍操作页。
 	#
 	# 为什么必须有这一句（**实测踩到的**）：操作页的内容跟权威状态走
@@ -3119,7 +3191,11 @@ func _on_building_action(entry: Dictionary) -> void:
 	# ⚠️ 这里**直接调 `_rebuild_card()`**，不走 `refresh()`：
 	#   `refresh()` 里那条 `_sync_tabs()` 有「页签组合没变就什么都不做」的短路，
 	#   正好会把这次重建吃掉（实测就是这样）。
-	_rebuild_card()
+	# ★★ 拆除例外：建筑已经离场，操作页下一帧会整块收起；这一帧先别重建，
+	#   让 `play_drag_success()` 的「新卡从下方升起」完整播完。
+	if t != "building_demolish":
+		_rebuild_card()
+	return ok
 
 
 ## 点了信息栏里那块面板上的某一格 = **取消那一格**（招募队列 = 取消那一单；
@@ -3489,6 +3565,8 @@ func build_reject_text(reason: String) -> String:
 			return "城墙只能建在区划中心周围：把城墙牌拖到高亮的区划中心上"
 		"wall_no_space":
 			return "这个区划中心周围的城墙位置已经建满 / 被挡住，建不了墙"
+		"wall_preplaced":
+			return "城墙只能由地图设计预先摆放，不能在局内建造"
 		"cost":
 			return "资源不足，建不了"
 		# ★★ 2026.11.18：教堂这套专属建筑的两条新拒因。

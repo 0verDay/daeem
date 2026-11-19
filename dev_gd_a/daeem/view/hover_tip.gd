@@ -57,9 +57,19 @@ const CHIP_H := 18.0
 const CHIP_GAP := 5.0
 const CHIP_ROW_GAP := 4.0
 const CHIP_MAX_ROWS := 2
+## 胶囊上方那行小标题（「效 果」）占的高度（与 `CAP_FS` 同档，胶囊块高度里含它）
+const CHIP_CAPTION_H := 14.0
 ## 置灰原因那一行（占一行高度，贴在牌底）
 const NOTE_FS := 11
 const NOTE_LINE_H := 20.0
+## ★★ 2026.11.19：**说明段落**（科技那种一句长的 `desc`）。
+##   面板高度是固定的（`HOVER_RECT` = 左下角栏 377×260），所以段落按可用高度折行 + 限行。
+##   为什么加它：科技页改版后只把短效果（`line`）放进胶囊，那一句「说明」整段丢了 ——
+##   用户口径「科技卡牌悬停的文本丢失了，补一下」。
+const BODY_FS := 12
+const BODY_LINE_H := 18.0
+## 段落与上面（金线 / 造价格）、下面（效果胶囊）之间的缝
+const BODY_GAP := 9.0
 
 var _font: Font = null
 ## 现在这块牌上写着什么（全部由 hud 喂进来，本控件不认识任何玩法概念）
@@ -69,6 +79,8 @@ var _cells: Array = []             # [{ label, value }]
 var _caption := ""
 var _chips: Array = []             # [String]
 var _note := ""
+## ★★ 2026.11.19：说明段落（可空）—— 科技那一句 `desc` 走这里，见 BODY_* 常量。
+var _body := ""
 var _showing: bool = false
 
 
@@ -94,14 +106,16 @@ func setup(p_font: Font = null) -> void:
 ##   @param cells   造价格 `[{label, value}]`（可以 0~3 格；空数组 = 不画那一排）
 ##   @param chips   特性胶囊文字（空数组 = 连小标题一起不画）
 ##   @param note    置灰原因（空串 = 不画）
+##   @param body    说明段落（空串 = 不画）—— 会按牌面可用高度折行 / 限行
 func show_card(title: String, subtitle: String, cells: Array, caption: String,
-		chips: Array, note: String = "") -> void:
+		chips: Array, note: String = "", body: String = "") -> void:
 	_title = title
 	_subtitle = subtitle
 	_cells = cells.duplicate()
 	_caption = caption
 	_chips = chips.duplicate()
 	_note = note
+	_body = body
 	_showing = true
 	visible = true
 	queue_redraw()
@@ -115,6 +129,7 @@ func clear() -> void:
 	_caption = ""
 	_chips = []
 	_note = ""
+	_body = ""
 	_showing = false
 	visible = false
 
@@ -159,15 +174,35 @@ func _draw() -> void:
 	var cells_y: float = rule_y + 10.0
 	_draw_cells(f, pad, cells_y, w - 2.0 * pad)
 
-	# ④ 特性：**页脚钉在牌底**（与详情牌 `.traits{bottom:16px}` 同一条规矩）——
-	#    先给「置灰原因」留一行，再把小标题 + 胶囊整体贴上去。
+	# ④ 特性块的几何：先算「胶囊几行 / 多高」，再决定它贴在哪。
 	var footer: float = size.y - pad
 	if _note != "":
 		footer -= NOTE_LINE_H
-	if not _chips.is_empty():
-		var rows: int = _chip_rows(f, pad, w - 2.0 * pad)
-		var block_h: float = float(rows) * CHIP_H + float(rows - 1) * CHIP_ROW_GAP
-		var chips_y: float = footer - block_h
+	var rows: int = _chip_rows(f, pad, w - 2.0 * pad) if not _chips.is_empty() else 0
+	var block_h: float = float(rows) * CHIP_H + float(maxi(0, rows - 1)) * CHIP_ROW_GAP
+	var chips_y := 0.0
+	# ④.5 说明段落（科技那种一句长的 desc）
+	#   ★ 有段落时整块**从上往下排**：说明 → 效果胶囊（不再把胶囊钉在牌底，
+	#     否则短说明会让牌中间空一大块）。没有段落（建筑 / 单位 / 将领）仍照旧贴底。
+	if _body.strip_edges() != "":
+		var body_top: float = (cells_y + CELL_H if not _cells.is_empty() else rule_y) + BODY_GAP
+		var bottom_room: float = footer - (BODY_GAP + CHIP_CAPTION_H if rows > 0 else 0.0)
+		var avail: float = maxf(0.0, bottom_room - body_top)
+		var max_lines: int = maxi(0, int(floor(avail / BODY_LINE_H)))
+		var lines := PackedStringArray()
+		if max_lines > 0:
+			lines = UiTextRes.wrap(f, _body, w - 2.0 * pad, BODY_FS, max_lines)
+			for li in lines.size():
+				draw_string(f, Vector2(pad, body_top + BODY_FS + float(li) * BODY_LINE_H),
+					lines[li], HORIZONTAL_ALIGNMENT_LEFT, w - 2.0 * pad, BODY_FS,
+					UiStyleRes.text_dim())
+		var used: float = float(lines.size()) * BODY_LINE_H
+		chips_y = body_top + used + BODY_GAP + CHIP_CAPTION_H
+		if rows > 0:
+			chips_y = minf(chips_y, footer - block_h)
+	else:
+		chips_y = footer - block_h
+	if rows > 0:
 		UiTextRes.tracked(self, f, Vector2(pad, chips_y - 7.0), _caption, CAP_FS,
 			Color(UiStyleRes.text_faint(), 0.95), CAP_TRACK)
 		_draw_chips(f, pad, chips_y, w - 2.0 * pad)
@@ -285,6 +320,11 @@ func cell_value(i: int) -> String:
 
 func chips() -> Array:
 	return _chips.duplicate()
+
+
+## ★★ 2026.11.19：说明段落原文（科技那句 `desc`；空串 = 这块牌没有段落）。
+func paragraph_text() -> String:
+	return _body
 
 
 ## 整块牌上的**全部文字**（结构化的那几段按顺序拼起来）——

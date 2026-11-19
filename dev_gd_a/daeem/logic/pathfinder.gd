@@ -25,7 +25,7 @@ const CORNER_SEGMENTS := 8
 
 ## 某地块对指定阵营是否可通行（**格级**）。
 ##
-## ★ UI 改版之后：城墙仍然「整格挡敌方 / 放行己方」；
+## ★★ 2026.11.19：城墙「整格挡**所有阵营**」（不再区分敌我）。
 ##   大本营 / 箭塔**整格对谁都不封**（本体小于一格，缝隙要能走）。
 ##   它们的阻挡交给 building.body_blocks() + 移动碰撞（logic/collision.gd），
 ##   以及下面 _squeeze_through_gap() 的斜向缝判定。
@@ -49,7 +49,7 @@ static func passable(map, buildings, cfg: ConfigRes, x: int, y: int, faction: St
 			return false
 	var b = buildings.get_cell(x, y)
 	if b != null:
-		# 城墙：己方放行、敌方挡死；大本营/箭塔：两边都放行（本体另行处理）
+		# 城墙：对任何阵营都挡死；大本营/箭塔：格级两边都放行（本体另行处理）
 		return b.blocks(faction) == false
 	return true
 
