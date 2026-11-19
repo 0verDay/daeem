@@ -107,6 +107,13 @@ func handle_drag(event: InputEventScreenDrag) -> void:
 			#   这样「快速点击」不会再被手指微动误判成拖视野（时间短 + 移动小 = 单击，见 _maybe_tap）。
 			var moved: float = event.position.distance_to(_press_screen)
 			var held_ms: int = Time.get_ticks_msec() - _press_ms
+			# ★★ 2026.11.19：按在可拆建筑上时，**手指不动**就留在长按判定里（不按时间转拖视野），
+			#   否则「长按拆除」永远等不到阈值。手指一动就取消长按，照常转拖视野。
+			var demolishing: bool = input_ctrl != null and input_ctrl.demolish_press_active()
+			if demolishing and moved < cfg.touch_pan_min_px:
+				return
+			if demolishing:
+				input_ctrl.cancel_demolish_press()
 			if moved >= cfg.touch_pan_min_px \
 					or held_ms >= int(cfg.touch_pan_hold_sec * 1000.0):
 				_mode = MODE_PAN
@@ -137,6 +144,9 @@ func _on_press(event: InputEventScreenTouch) -> void:
 		_started_on_ui = _point_hits_ui(event.position)
 		_mode = MODE_IDLE if _started_on_ui else MODE_HOLD
 		_box_started = false
+		# ★★ 2026.11.19：长按建筑 = 拆除（与鼠标同一条判定；由场景每帧 tick）。
+		if not _started_on_ui and input_ctrl != null:
+			input_ctrl.begin_demolish_press(event.position)
 	elif n == 2:
 		# 起点在 UI 上 / 这一串已消化：第二指不改变手势。
 		if _started_on_ui or _mode == MODE_DONE:
@@ -153,6 +163,9 @@ func _on_press(event: InputEventScreenTouch) -> void:
 
 func _on_release(event: InputEventScreenTouch) -> void:
 	_points.erase(event.index)
+	# ★★ 2026.11.19：抬手就结束长按判定（无论是否已经触发过拆除）。
+	if input_ctrl != null:
+		input_ctrl.cancel_demolish_press()
 	match _mode:
 		MODE_HOLD:
 			if _points.is_empty():

@@ -1624,6 +1624,9 @@ func _process(dt: float) -> void:
 	input_ctrl.touch_mode = touch_device
 	# ★★ 2026.11.14：带 dt（左键拖拽松手后的**惯性滑行**靠它推进；暂停时 dt = 0 ⇒ 冻结）。
 	input_ctrl.poll_mouse(dt)
+	# ★★ 2026.11.19：长按建筑 = 拆除（建筑操作页已移除）。
+	if not bool(input_ctrl.paused):
+		input_ctrl.tick_demolish_long_press()
 	# ★★ 将领标签 / 数字键的长按计时：桌面与手机都靠这一句推进
 	#   （手机端 squad_panel 自己的 `_process` 被 HUD 关掉了，不能放那里）。
 	input_ctrl.poll_gestures()

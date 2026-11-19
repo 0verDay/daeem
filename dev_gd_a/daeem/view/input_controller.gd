@@ -271,6 +271,12 @@ var drag_screen_box: Rect2 = Rect2()
 var drag_screen_valid: bool = false
 ## 左键按下之后、还没判定成「点击还是框选」的那一段
 var _drag_pending: bool = false
+## ★★ 2026.11.19：长按拆除建筑（建筑操作页已移除，拆除改为地图长按）。
+var _demolish_active: bool = false
+var _demolish_fired: bool = false
+var _demolish_press_ms: int = 0
+var _demolish_press_pos := Vector2.ZERO
+var _demolish_building = null
 ## 按下的屏幕坐标（只用来算「移动了多少像素」——阈值是像素口径，与相机缩放无关）
 var _drag_press_screen: Vector2 = Vector2.ZERO
 ## ★★ 2026.11.16：**中键拖视角**是否已经越过阈值（松手时据此决定「视角 / 不下令」）。
@@ -661,6 +667,8 @@ func handle_mouse_button(event: InputEventMouseButton) -> bool:
 		if event.pressed:
 			_begin_box(event)
 		else:
+			# ★★ 2026.11.19：抬指先结束长按判定，再走普通点击 / 框选。
+			_cancel_demolish_press()
 			_finish_box(event.shift_pressed)
 		return true
 	if event.button_index == MOUSE_BUTTON_MIDDLE:
@@ -728,6 +736,10 @@ func handle_mouse_motion(event: InputEventMouseMotion) -> bool:
 			var fps: float = maxf(1.0, Engine.get_frames_per_second())
 			_pan_vel = _pan_vel.lerp(pan_delta * fps, 0.55)
 		return true
+	# 手指 / 鼠标一动，就不是长按拆除了（转成普通框选 / 点击）。
+	# ★ 放在 `_drag_pending` 之前：长按拆除本身不依赖框选状态。
+	if _demolish_active and event.position.distance_to(_demolish_press_pos) > _drag_threshold_px():
+		_cancel_demolish_press()
 	if not _drag_pending:
 		return false
 	if not drag_active:
@@ -850,6 +862,74 @@ func _begin_box(event: InputEventMouseButton) -> void:
 	_drag_press_screen = event.position
 	_drag_freeze_cam = false
 	_drag_pan_moved = 0.0
+	_begin_demolish_press(event.position)
+
+
+## ★★ 2026.11.19：长按拆除 —— 左键按在**己方可拆建筑**上，保持不动超过阈值就拆。
+## 大本营 / 区划中心 / 敌方建筑都不参与（候选为 null）。
+func _begin_demolish_press(screen_pos: Vector2) -> void:
+	_demolish_active = false
+	_demolish_fired = false
+	_demolish_building = null
+	if world == null or not _action_ok("build"):
+		return
+	var b = _building_at_screen(screen_pos)
+	if b == null or not b.alive:
+		return
+	if String(b.type) == BuildingRes.TYPE_BASE or b.is_invulnerable():
+		return
+	if not world.accepts_owner(String(b.owner), world.my_faction):
+		return
+	_demolish_building = b
+	_demolish_active = true
+	_demolish_press_ms = Time.get_ticks_msec()
+	_demolish_press_pos = screen_pos
+
+
+## 抬指 / 拖动 / 取消：结束这一轮长按判定（不拆除）。
+func _cancel_demolish_press() -> void:
+	_demolish_active = false
+	_demolish_building = null
+
+
+## 触摸层入口：单指按下时开始长按判定（与鼠标 `_begin_box` 同一个函数）。
+func begin_demolish_press(screen_pos: Vector2) -> void:
+	_begin_demolish_press(screen_pos)
+
+
+func cancel_demolish_press() -> void:
+	_cancel_demolish_press()
+
+
+## 现在是否正按着一栋可拆建筑（触摸层据此决定「按久不转拖视野」）。
+func demolish_press_active() -> bool:
+	return _demolish_active
+
+
+## 由场景每帧调用：检查长按是否到点。到点后发拆除命令，并吞掉这次左键松手。
+func tick_demolish_long_press() -> void:
+	if not _demolish_active or _demolish_fired:
+		return
+	if drag_active:
+		_demolish_active = false
+		return
+	var hold_ms: int = int(maxf(0.25, cfg.touch_long_press_sec if cfg != null else 0.4) * 1000.0)
+	if Time.get_ticks_msec() - _demolish_press_ms < hold_ms:
+		return
+	var b = _demolish_building
+	_demolish_active = false
+	if b == null or not is_instance_valid(b) or not b.alive:
+		return
+	if not world.accepts_owner(String(b.owner), world.my_faction):
+		return
+	if request_building_demolish(b):
+		_demolish_fired = true
+		# 这一下已经是「拆除」，松手不再当成点击选中 / 框选。
+		_drag_pending = false
+		drag_active = false
+		drag_screen_valid = false
+		_drag_freeze_cam = false
+		local_ui_changed.emit()
 
 
 ## 左键松开：拖过 = 按**屏幕矩形**框选（与画出来的框逐像素一致）；
@@ -2120,6 +2200,20 @@ func request_recruit(kind: String) -> bool:
 	#    不会所有单子都堆在选中列表的第一个将领身上。
 	var leader = _pick_recruit_leader(kind, leaders)
 	if leader == null:
+		return false
+	return request_recruit_for(kind, leader)
+
+
+## ★★ 2026.11.19：把单位直接招到**指定的己方将军**名下（单位牌拖到将军上）。
+## 与 `request_recruit()` 同一条命令，只是队长不再从选中列表里挑。
+func request_recruit_for(kind: String, leader) -> bool:
+	if not _action_ok("recruit"):
+		return false
+	if world == null or leader == null or not is_instance_valid(leader):
+		return false
+	if not bool(leader.alive) or not world.is_team_leader(leader):
+		return false
+	if not world.is_own_seat(String(leader.faction)):
 		return false
 	last_recruit_leader = leader
 	command_issued.emit({

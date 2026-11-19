@@ -84,6 +84,8 @@ const DRAG_RETURN_SEC := 0.20
 ##   旧版是「原地淡回」（`_restore_card_at_slot` 只写 alpha），玩家看到的是同一张牌
 ##   凭空消失又凭空出现；现在起点在牌区下方（整张牌都在屏幕外），终点是它自己的槽位。
 const CARD_RISE_SEC := 0.26
+## 打出成功时在落点**短暂停顿**再上浮，形成「先按住、再打出」的顿挫。
+const SUCCESS_HOLD_SEC := 0.04
 ## 拖起一张原本被悬停放大的牌时，先把它收回 1.0 的时长（不再一帧硬缩）。
 const DRAG_SCALE_SEC := 0.12
 ## ★★ 2026.11.14：拖拽中「卡面显示 / 淡出」的过渡时长，以及手牌区判据向下放宽多少。
@@ -855,31 +857,37 @@ func animate_deck_in() -> void:
 		# ★★ 2026.11.18：支点钉成牌底中点，入场/结束都在同一套几何里。
 		_cells[i].pivot_offset = UiLayoutRes.card_pivot(target.size)
 		_card_faces[i].pivot_offset = UiLayoutRes.card_pivot(target.size)
-		# 起点只比终点低一点点、转一点点：旧版「+40px、旋转 ×1.5」在 9 张牌时会
-		# 先散成一把扇子再收拢，看起来像牌在抽。
-		_cells[i].position = target.position + Vector2(0.0, 26.0)
-		_cells[i].rotation = target_rotation * 0.5
+		# ★★ 2026.11.19（抽牌感）：起点更低一点、旋转更多一点，并沿横向向外错开；
+		#   靠中间的先起、两侧后到（见下面的 delay）。
+		var mid := (float(count) - 1.0) * 0.5
+		var away := float(ordinal) - mid
+		var edge := 0.0 if mid <= 0.0 else absf(away) / mid
+		var side := 0.0 if absf(away) < 0.001 else signf(away)
+		_cells[i].position = target.position + Vector2(side * (6.0 + 8.0 * edge),
+			26.0 + 6.0 * edge)
+		_cells[i].rotation = target_rotation * 1.35
 		_card_faces[i].modulate.a = 0.0
 		_card_faces[i].scale = Vector2.ONE
 		_card_faces[i].position = _cells[i].position
 		_card_faces[i].rotation = _cells[i].rotation
 	_deck_tween = create_tween()
 	_deck_tween.set_parallel(true)
+	var mid_ord := (float(count) - 1.0) * 0.5
 	for ordinal in count:
 		var i := visible_indices[ordinal]
 		var target := UiLayoutRes.card_fan_local(ordinal, count)
-		var delay := float(ordinal) * 0.018
-		_deck_tween.tween_property(_cells[i], "position", target.position, 0.18) \
-			.set_delay(delay).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-		_deck_tween.tween_property(_cells[i], "rotation",
-			UiLayoutRes.card_fan_rotation(ordinal, count), 0.18) \
-			.set_delay(delay).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		# ★ 中间先起、两侧后到；每往外一张 +18ms（9 张最外延迟 ~72ms）。
+		var delay := absf(float(ordinal) - mid_ord) * 0.018
+		var rot := UiLayoutRes.card_fan_rotation(ordinal, count)
+		_deck_tween.tween_property(_cells[i], "position", target.position, 0.22) \
+			.set_delay(delay).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+		_deck_tween.tween_property(_cells[i], "rotation", rot, 0.22) \
+			.set_delay(delay).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 		_deck_tween.tween_property(_cells[i], "modulate:a", 1.0, 0.14).set_delay(delay)
-		_deck_tween.tween_property(_card_faces[i], "position", target.position, 0.18) \
-			.set_delay(delay).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-		_deck_tween.tween_property(_card_faces[i], "rotation",
-			UiLayoutRes.card_fan_rotation(ordinal, count), 0.18) \
-			.set_delay(delay).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		_deck_tween.tween_property(_card_faces[i], "position", target.position, 0.22) \
+			.set_delay(delay).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+		_deck_tween.tween_property(_card_faces[i], "rotation", rot, 0.22) \
+			.set_delay(delay).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 		_deck_tween.tween_property(_card_faces[i], "modulate:a", 1.0, 0.14).set_delay(delay)
 
 
@@ -1268,15 +1276,15 @@ func play_drag_success(i: int, screen_pos: Vector2, only_this_card: bool = true)
 	var out := create_tween().set_parallel(true)
 	_success_tween = out
 	out.tween_property(cell, "position:y", cell.position.y - 54.0, 0.14) \
-		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+		.set_delay(SUCCESS_HOLD_SEC).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
 	out.tween_property(cell, "scale", Vector2(0.72, 0.72), 0.14) \
-		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
-	out.tween_property(cell, "modulate:a", 0.0, 0.14)
+		.set_delay(SUCCESS_HOLD_SEC).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	out.tween_property(cell, "modulate:a", 0.0, 0.14).set_delay(SUCCESS_HOLD_SEC)
 	out.tween_property(face, "position:y", face.position.y - 54.0, 0.14) \
-		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+		.set_delay(SUCCESS_HOLD_SEC).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
 	out.tween_property(face, "scale", Vector2(0.72, 0.72), 0.14) \
-		.set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
-	out.tween_property(face, "modulate:a", 0.0, 0.14)
+		.set_delay(SUCCESS_HOLD_SEC).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_IN)
+	out.tween_property(face, "modulate:a", 0.0, 0.14).set_delay(SUCCESS_HOLD_SEC)
 	out.chain().tween_callback(func() -> void:
 		if not is_instance_valid(self):
 			return
@@ -1325,8 +1333,10 @@ func _restore_card_at_slot(i: int) -> void:
 		_drag_tween.kill()
 	if _success_tween != null and _success_tween.is_running():
 		_success_tween.kill()
-	var start := Vector2(r.position.x, UiLayoutRes.CARD_RECT.size.y + 8.0)
-	var start_rot := 0.0
+	var card_center_x := r.position.x + r.size.x * 0.5
+	var side := signf(card_center_x - UiLayoutRes.CARD_RECT.size.x * 0.5)
+	var start := Vector2(r.position.x + side * 8.0, UiLayoutRes.CARD_RECT.size.y + 8.0)
+	var start_rot := side * deg_to_rad(3.0)
 	for node in [cell, face]:
 		var c := node as Control
 		c.position = start

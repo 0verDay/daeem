@@ -66,7 +66,7 @@ func _run() -> void:
 			game.hud.page_tabs.select_page(PageTabsRes.PAGE_UNIT)
 			await _wait(SETTLE_FRAMES)
 			await _shoot("10b_recruit_hand")
-			game.hud.page_tabs.select_page(PageTabsRes.PAGE_ORDER)
+			game.hud.page_tabs.select_page(PageTabsRes.PAGE_UNIT)
 
 		# ★★ 多部队详情卡回归图：焦点队伍在上，其他已选队伍出现在下方序号格。
 		var own_leaders: Array = [mine]

@@ -140,6 +140,10 @@ var drag_recruit_tile := Vector2i(-1, -1)
 var drag_recruit_anchors: Array = []
 var drag_recruit_anchor: Variant = null
 var drag_recruit_radius: float = 1.5
+## ★★ 2026.11.19：单位牌的拖拽目标是**任意己方将军**（不是区划中心）。
+##   true 时 `drag_recruit_unit_anchors` 里是 `{"unit": u, "tile": tx,ty}`。
+var drag_recruit_unit_mode: bool = false
+var drag_recruit_unit_anchors: Array = []
 
 ## ★★ 交给 overlay 的**统一拖牌锚点状态**（建筑 / 招募共用一套画法）：
 ##   圈从内往外扩散、离开时缩回；颜色由 `drag_anchor_kind` + `drag_anchor_ok` 决定。
@@ -305,15 +309,23 @@ var _card_sig_key: String = ""
 ## 上一次推给 page_tabs 的配置（kind + 页列表）。每帧比一次，不变就不重推 ——
 ## 否则每帧都会重建命令卡。
 var _tab_key: String = ""
-## 每一类选中**上次停在那一页**（kind → page）。
-## ★ 为什么要记：玩家切到「单位」页排兵，点一下空地（没选中 → 建筑页），
-##   再点回部队时不该被抢回「操作」页 —— 那会让「我刚看的那一页」凭空跳走。
-var _page_memory: Dictionary = {}
+## ★★ 2026.11.19：选中己方对象时自动跳页的「上一次选中签名」。
+##   只在这里记住，玩家手动切页不会被强行拉回去。
+var _page_jump_sig: String = ""
 ## ★★ 2026.11.19：`_sync_tabs()` 正在按**选中对象**重排页签时为 true。
-##   此时 `page_tabs.set_pages()` 可能同步发 `page_changed`，但那不是玩家切页 ——
-##   它只应该**换内容**，不应该播「新牌从牌堆抽出」的入场动效。
+##   此时 `page_tabs.set_pages()` 可能同步发 `page_changed` —— 这里先压制它，
+##   避免「同一次选中变化」被播两遍；真正的整手牌入场统一由
+##   `_animate_hand_on_selection_change()` 在刷新末尾播。
 ##   玩家自己点页签 / Tab 切页仍然走 `_on_page_changed()`，动效保留。
 var _sync_tabs_guard: bool = false
+## ★★ 2026.11.19：当前「己方部队 / 建筑」选中签名。签名变化时整手牌播一次入场，
+##   包括「部队 ↔ 建筑」这种页签 / 手牌不同的切换（用户口径）。
+var _hand_anim_sig: String = ""
+## ★★ 2026.11.19：X 页签收起状态。true = 手牌 / 页签 / 科技格整块隐藏，
+##   直到玩家重新选中对象或点空地（`local_ui_changed`）才恢复。
+var _hand_collapsed: bool = false
+## 收起动作内部会清选中，要避免 `local_ui_changed` 立刻把手牌又放回来。
+var _collapsing_hand: bool = false
 
 
 func setup(p_cfg: ConfigRes, p_world, p_input, theme: Theme, p_camera_rig = null,
@@ -383,6 +395,11 @@ func setup(p_cfg: ConfigRes, p_world, p_input, theme: Theme, p_camera_rig = null
 	# ★★ 手机端：部队列表改由 HUD 的 4 槽调度器驱动，关掉它自己的 `_process`
 	#   （否则它和 HUD 是各自独立的计时器，很容易叠在同一帧）。
 	#   桌面 / 测试保持它自己的每帧刷新。
+	# ★★ 2026.11.19：X 收起后，任何一次选中 / 点空地（local_ui_changed）都恢复手牌。
+	#   桌面 / 手机都接；手机那条另有 `_on_mobile_ui_changed` 做全刷节拍。
+	if input_ctrl != null \
+			and not input_ctrl.local_ui_changed.is_connected(_on_local_ui_changed):
+		input_ctrl.local_ui_changed.connect(_on_local_ui_changed)
 	if _refresh_interval > 0.0:
 		if _mobile_ui_stagger and squad_panel != null:
 			squad_panel.set_process(false)
@@ -394,6 +411,18 @@ func setup(p_cfg: ConfigRes, p_world, p_input, theme: Theme, p_camera_rig = null
 ## 选中 / 本地 UI 变化：下个节拍走一次完整刷新（shell + detail + squad）。
 func _on_mobile_ui_changed() -> void:
 	_mobile_force_full = true
+
+
+## ★★ 2026.11.19：X 收起后，只要玩家重新选中对象或点空地，就恢复手牌。
+##   `_collapsing_hand` 期间不响应（收起动作自己会清选中）。
+func _on_local_ui_changed() -> void:
+	if _collapsing_hand or not _hand_collapsed:
+		return
+	_hand_collapsed = false
+	# 强制下一次 `_sync_tabs()` 重新推页签（收起时把 key 清掉了）。
+	_tab_key = ""
+	# 选中 / 点空地那一下就要把手牌放回来，不等下一次 HUD 刷新。
+	_sync_tabs()
 
 
 func _process(dt: float) -> void:
@@ -1071,8 +1100,17 @@ func _build_command_card() -> void:
 
 func _on_card_drag_started(entry: Dictionary, screen_pos: Vector2) -> void:
 	var kind := String(entry.get("type", ""))
+	if kind == "base_upgrade":
+		_begin_base_upgrade_drag(screen_pos)
+		return
 	if kind == "build":
 		_begin_build_drag(entry, screen_pos)
+		return
+	# ★★ 2026.11.19（用户口径）：单位牌拖出 → 任意己方将军都是落点；
+	#   如果当前已选中部队，镜头**立刻一次性**聚焦到主选中部队。
+	if kind == "recruit":
+		_begin_recruit_drag(entry, screen_pos)
+		_focus_selected_troops_once()
 		return
 	# ★★ 2026.11.15 第二轮：将领牌拖出 → 己方区划中心成为落点（圈内松手 = 招募）。
 	if (kind == "general_drag" or kind == "zone_recruit") \
@@ -1081,7 +1119,8 @@ func _on_card_drag_started(entry: Dictionary, screen_pos: Vector2) -> void:
 
 
 func _on_card_drag_moved(entry: Dictionary, screen_pos: Vector2) -> void:
-	if drag_build_active and String(entry.get("build_type", "")) == drag_build_type:
+	if drag_build_active and (String(entry.get("type", "")) == "base_upgrade" \
+			or String(entry.get("build_type", "")) == drag_build_type):
 		_update_build_drag_preview(screen_pos)
 		return
 	if drag_recruit_active:
@@ -1090,13 +1129,18 @@ func _on_card_drag_moved(entry: Dictionary, screen_pos: Vector2) -> void:
 
 func _on_card_drag_finished(entry: Dictionary, screen_pos: Vector2, index: int) -> void:
 	var kind := String(entry.get("type", ""))
-	if kind == "build" and drag_build_active:
+	if (kind == "build" or kind == "base_upgrade") and drag_build_active:
 		_update_build_drag_preview(screen_pos)
 		var built: bool = _commit_card_build_drag()
 		_clear_card_build_drag()
 		if built:
 			# ★ 生效：牌向上淡出并缩小消失；**只把这**张牌淡回槽位，不重排整手牌。
-			command_card.play_drag_success(index, screen_pos, true)
+			# ★★ 2026.11.19：大本营升到满级后这张牌已被移除 —— 不要拿它的下标去动画
+			#   下一张牌（否则塔牌会从大本营的位置飞出来）。
+			var still_same: bool = index >= 0 and index < command_card.entries().size() \
+				and String(command_card.entry_at(index).get("type", "")) == kind
+			if still_same:
+				command_card.play_drag_success(index, screen_pos, true)
 		else:
 			# ★ 拒绝 / 取消：牌飞回手牌栏；只有**真的丢在地图上但建不了**才闪红
 			#   （拖回手牌 = 取消，不该像出错）。
@@ -1122,7 +1166,20 @@ func _on_card_drag_finished(entry: Dictionary, screen_pos: Vector2, index: int) 
 		#   旧版不看松手位置，拖回手牌也照样发招募命令 —— 玩家看到的是「牌收回来了，
 		#   兵却招出来了」。判据与建造 / 操作牌同一条：`point_hits_ui()`。
 		if point_hits_ui(screen_pos):
+			if drag_recruit_active:
+				_clear_card_recruit_drag()
 			command_card.animate_card_back(index)
+			return
+		# ★★ 2026.11.19：单位页的牌拖到己方将军圈内 = 招到那位将军名下。
+		if drag_recruit_active and drag_recruit_unit_mode:
+			_update_recruit_drag_preview(screen_pos)
+			var recruited_unit: bool = _commit_recruit_drag()
+			_clear_card_recruit_drag()
+			if recruited_unit:
+				command_card.play_drag_success(index, screen_pos, true)
+			else:
+				command_card.animate_card_back(index)
+				flash_reject()
 			return
 		var played_kind := String(entry.get("unit_kind", ""))
 		_recruit_play_context = {"kind": played_kind, "screen_pos": screen_pos}
@@ -1173,11 +1230,53 @@ func _on_tech_drag_finished(id: String, screen_pos: Vector2, _index: int) -> voi
 	_on_tech_cell_activated(id)
 
 
+## ★★ 2026.11.19：拖单位牌时，把镜头**一次性**移到当前主选中部队 / 将领。
+## 不是跟随：只调一次 `center_on_tile_smooth`，之后镜头照常由玩家控制。
+func _focus_selected_troops_once() -> void:
+	if camera_rig == null or input_ctrl == null:
+		return
+	var u = input_ctrl.first_selected_leader()
+	if u == null:
+		for cand in input_ctrl.selected_units:
+			if cand != null and cand.alive:
+				u = cand
+				break
+	if u == null or not camera_rig.has_method("center_on_tile"):
+		return
+	camera_rig.center_on_tile(u.pos)
+
+
 ## 拖起建筑牌：记下这张牌的类型 / 所有可落点，并立刻算一次「指针落在哪」。
 ##
 ## ★★ 2026.11.15：拖起那一刻就把「这一张牌所有能落的位置」算出来 ——
 ##   overlay 靠它画**全部点位的高亮**（用户口径：拖拽时所有可建点位高亮）。
 ##   建筑牌不改变世界（只是读取），所以只算一次；松手后清理。
+## ★★ 2026.11.19：大本营牌 = 拖到**当前己方大本营**上升级。
+## 复用建筑拖拽那一整套（圆形范围 / 吸附 / 绿色判定 / 成功回手），
+## 只是“可落点”固定为那一栋大本营。
+func _begin_base_upgrade_drag(screen_pos: Vector2) -> void:
+	if world == null or cfg == null:
+		return
+	var base = world.find_base_of(String(world.my_faction))
+	if base == null or int(base.level) >= world.building_level_cap(base):
+		return
+	drag_build_active = true
+	drag_build_type = "base"
+	drag_build_tile = Vector2i(-1, -1)
+	drag_build_anchor = null
+	drag_build_upgrade = null
+	drag_build_pointer_tile = Vector2i(-1, -1)
+	_drag_build_left_hand = false
+	drag_build_radius = cfg.build_drop_radius_tiles if cfg != null else 1.5
+	drag_build_anchors = []
+	drag_upgrade_targets = {Vector2i(int(base.tx), int(base.ty)): base}
+	drag_anchor_active = true
+	drag_anchor_kind = "build"
+	drag_anchor_radius = drag_build_radius
+	drag_anchor_tiles = [Vector2i(int(base.tx), int(base.ty))]
+	_update_build_drag_preview(screen_pos)
+
+
 func _begin_build_drag(entry: Dictionary, screen_pos: Vector2) -> void:
 	var build_type := String(entry.get("build_type", ""))
 	if build_type == "" or not bool(entry.get("ready", true)) or world == null:
@@ -1282,7 +1381,7 @@ func _update_build_drag_preview(screen_pos: Vector2) -> void:
 ## ★ 判据全部走权威侧：`world.can_recruit_zone()` 为空才算可落点
 ##   （已拥有 / 阶数不足 / 将领满员 / 冷却中 / 队列满 都会把那个中心排除掉）。
 func _begin_recruit_drag(entry: Dictionary, screen_pos: Vector2) -> void:
-	if world == null or input_ctrl == null or world.zones == null:
+	if world == null or input_ctrl == null:
 		return
 	var kind := String(entry.get("unit_kind", ""))
 	if kind == "":
@@ -1293,24 +1392,45 @@ func _begin_recruit_drag(entry: Dictionary, screen_pos: Vector2) -> void:
 	drag_recruit_anchor = null
 	drag_recruit_radius = cfg.build_drop_radius_tiles if cfg != null else 1.5
 	drag_recruit_anchors = []
-	for z in world.zones.zones:
-		if typeof(z) != TYPE_DICTIONARY:
-			continue
-		var zd: Dictionary = z
-		if zd.get("center", null) == null:
-			continue
-		var zid := int(zd.get("id", -1))
-		if zid < 0:
-			continue
-		if world.can_recruit_zone(kind, zid, world.my_faction) != "":
-			continue
-		drag_recruit_anchors.append({"tile": zd["center"], "zone_id": zid})
+	drag_recruit_unit_anchors = []
+	drag_recruit_unit_mode = String(entry.get("type", "")) == "recruit"
+	if drag_recruit_unit_mode:
+		# 单位牌：任一己方将军都是落点（圆圈指示与建造点位同一套）。
+		for u in world.units:
+			if u == null or not u.alive or not u.is_general():
+				continue
+			if String(u.faction) != String(world.my_faction):
+				continue
+			if u.has_method("is_downed") and u.is_downed():
+				continue
+			drag_recruit_unit_anchors.append({
+				"unit": u, "tile": Vector2i(int(u.tx), int(u.ty))})
+	else:
+		# 将领牌：区划中心是落点（原逻辑）。
+		if world.zones == null:
+			return
+		for z in world.zones.zones:
+			if typeof(z) != TYPE_DICTIONARY:
+				continue
+			var zd: Dictionary = z
+			if zd.get("center", null) == null:
+				continue
+			var zid := int(zd.get("id", -1))
+			if zid < 0:
+				continue
+			if world.can_recruit_zone(kind, zid, world.my_faction) != "":
+				continue
+			drag_recruit_anchors.append({"tile": zd["center"], "zone_id": zid})
 	drag_anchor_active = true
 	drag_anchor_kind = "recruit"
 	drag_anchor_radius = drag_recruit_radius
 	drag_anchor_tiles = []
-	for a in drag_recruit_anchors:
-		drag_anchor_tiles.append((a as Dictionary)["tile"])
+	if drag_recruit_unit_mode:
+		for a in drag_recruit_unit_anchors:
+			drag_anchor_tiles.append((a as Dictionary)["tile"])
+	else:
+		for a in drag_recruit_anchors:
+			drag_anchor_tiles.append((a as Dictionary)["tile"])
 	_update_recruit_drag_preview(screen_pos)
 
 
@@ -1321,7 +1441,9 @@ func _update_recruit_drag_preview(screen_pos: Vector2) -> void:
 	drag_recruit_anchor = null
 	drag_anchor_tile = Vector2i(-1, -1)
 	drag_anchor_ok = false
-	if palette == null or world == null or drag_recruit_anchors.is_empty():
+	var anchors: Array = drag_recruit_unit_anchors \
+		if drag_recruit_unit_mode else drag_recruit_anchors
+	if palette == null or world == null or anchors.is_empty():
 		return
 	if point_hits_ui(screen_pos):
 		return
@@ -1331,9 +1453,16 @@ func _update_recruit_drag_preview(screen_pos: Vector2) -> void:
 	var p: Vector2 = logic
 	var best: Variant = null
 	var best_d := INF
-	for a in drag_recruit_anchors:
-		var tile: Vector2i = (a as Dictionary)["tile"]
-		var d: float = Vector2(float(tile.x) + 0.5, float(tile.y) + 0.5).distance_to(p)
+	for a in anchors:
+		var d: float
+		if drag_recruit_unit_mode:
+			var u = (a as Dictionary).get("unit", null)
+			if u == null or not is_instance_valid(u) or not u.alive:
+				continue
+			d = u.pos.distance_to(p)
+		else:
+			var tile: Vector2i = (a as Dictionary)["tile"]
+			d = Vector2(float(tile.x) + 0.5, float(tile.y) + 0.5).distance_to(p)
 		if d > drag_recruit_radius + 1e-6:
 			continue
 		if d < best_d - 1e-6:
@@ -1351,6 +1480,13 @@ func _update_recruit_drag_preview(screen_pos: Vector2) -> void:
 func _recruit_anchor_ok(anchor: Variant) -> bool:
 	if anchor == null or world == null:
 		return false
+	if drag_recruit_unit_mode:
+		var u = (anchor as Dictionary).get("unit", null)
+		if u == null or not is_instance_valid(u) or not u.alive:
+			return false
+		if world.can_recruit(drag_recruit_kind, String(u.id), world.my_faction) != "":
+			return false
+		return world.can_afford_recruit(drag_recruit_kind, String(u.id)) == ""
 	var zid := int((anchor as Dictionary).get("zone_id", -1))
 	return world.can_afford_zone_recruit(drag_recruit_kind, zid) == ""
 
@@ -1361,8 +1497,26 @@ func _commit_recruit_drag() -> bool:
 		return false
 	if drag_recruit_anchor == null:
 		if not point_hits_ui(drag_recruit_screen_pos):
-			show_notice("把将领牌拖到区划中心的圈里再松手：那里才是招募的落点")
+			if drag_recruit_unit_mode:
+				show_notice("把单位牌拖到己方将军的圈里再松手")
+			else:
+				show_notice("把将领牌拖到区划中心的圈里再松手：那里才是招募的落点")
 		return false
+	if drag_recruit_unit_mode:
+		var u = (drag_recruit_anchor as Dictionary).get("unit", null)
+		if u == null or not is_instance_valid(u) or not u.alive:
+			show_notice("这位将军不在了")
+			return false
+		var why_u: String = world.can_recruit(drag_recruit_kind, String(u.id), world.my_faction)
+		if why_u != "":
+			show_notice(recruit_reject_text(why_u, drag_recruit_kind))
+			return false
+		var afford_u: String = world.can_afford_recruit(drag_recruit_kind, String(u.id))
+		if afford_u != "":
+			show_notice("招募%s：%s" % [drag_recruit_kind,
+				"资源不足" if afford_u == "cost" else "人口不足"])
+			return false
+		return input_ctrl.request_recruit_for(drag_recruit_kind, u)
 	var zid := int((drag_recruit_anchor as Dictionary).get("zone_id", -1))
 	var why: String = world.can_recruit_zone(drag_recruit_kind, zid, world.my_faction)
 	if why != "":
@@ -1503,6 +1657,14 @@ func _upgrade_reject_text(reason: String, b) -> String:
 ## 拖到「空处」时的提示 —— 如果那格正好有一栋同种建筑但升不了，说清楚原因。
 func _drag_build_miss_text() -> String:
 	var tile: Vector2i = drag_build_pointer_tile
+	if drag_build_type == "base":
+		if world != null and tile.x >= 0 and tile.y >= 0:
+			var bb = world.building_at(tile.x, tile.y)
+			if bb != null and bb.alive and bb.is_base():
+				var why_b: String = world.building_upgrade_reason(bb, world.my_faction)
+				if why_b != "":
+					return _upgrade_reject_text(why_b, bb)
+		return "把大本营牌拖到己方大本营上松手，才能升级"
 	if world != null and tile.x >= 0 and tile.y >= 0:
 		var b = world.building_at(tile.x, tile.y)
 		if b != null and b.alive and String(b.type) == drag_build_type:
@@ -1533,6 +1695,8 @@ func _clear_card_recruit_drag() -> void:
 	drag_recruit_tile = Vector2i(-1, -1)
 	drag_recruit_anchors = []
 	drag_recruit_anchor = null
+	drag_recruit_unit_mode = false
+	drag_recruit_unit_anchors = []
 	_clear_drag_anchor()
 
 
@@ -1559,7 +1723,7 @@ func set_page_tab_attention(page: String) -> void:
 func _build_page_tabs() -> void:
 	page_tabs = PageTabsRes.new()
 	_root.add_child(page_tabs)
-	page_tabs.setup()
+	page_tabs.setup(_font)
 	page_tabs.page_changed.connect(_on_page_changed)
 
 
@@ -1734,12 +1898,46 @@ func _build_squad_panel() -> void:
 # 命令卡的内容（随页签切换）
 # ------------------------------------------------------------------
 
-func _on_page_changed(_page: String) -> void:
-	_page_memory[_tab_kind] = String(page_tabs.page())
-	# ★★ 2026.11.19（用户报告）：选中另一个建筑 / 部队时，页签列表跟着换成
-	#   另一类，`set_pages()` 会同步发这个信号。那不是「玩家切页」，不该播
-	#   新牌入场动效；只有 `select_page()` / Tab 切页才播。
+func _on_page_changed(page: String) -> void:
+	# ★★ 2026.11.19：X 不是内容页 —— 收起手牌 + 取消全部选中；再点一次恢复。
+	if page == PageTabsRes.PAGE_CLOSE:
+		if _hand_collapsed:
+			_hand_collapsed = false
+			_tab_key = ""
+			_sync_tabs()
+		else:
+			_collapse_hand()
+		return
+	# ★ 收起状态下点任意内容扇区 = 恢复手牌并切到那一页。
+	if _hand_collapsed:
+		_hand_collapsed = false
+		_tab_key = ""
+		if page_tabs != null:
+			page_tabs.visible = true
+		if command_card != null:
+			command_card.visible = true
+	# ★★ 2026.11.19：选中另一个建筑 / 部队时，`set_pages()` 也会同步发这个信号。
+	#   那一路先不在这里播 —— 统一由 `_animate_hand_on_selection_change()` 播一次，
+	#   否则「换选中 + 换页」会叠两遍。玩家 `select_page()` / Tab 切页仍在这里播。
 	_rebuild_card(not _sync_tabs_guard)
+
+
+## X 页签：收起手牌并取消全部选中。★ 圆盘保留（用户口径：点扇区可恢复）。
+func _collapse_hand() -> void:
+	_hand_collapsed = true
+	_collapsing_hand = true
+	if input_ctrl != null:
+		input_ctrl.select_units([])
+	_collapsing_hand = false
+	if page_tabs != null:
+		page_tabs.visible = true
+		page_tabs.set_page_silent(PageTabsRes.PAGE_CLOSE)
+	if command_card != null:
+		command_card.visible = false
+	if tech_grid != null:
+		tech_grid.set_visible_page(false)
+	# 让下一次恢复时强制重推页签（`_page` 现在停在 close）。
+	_tab_key = ""
 
 
 ## 「这一屏没有右下角」—— **页签列 + 命令卡整块隐藏**（不是立一颗空页签）。
@@ -1797,80 +1995,29 @@ func _zone_is_own(z: Dictionary) -> bool:
 	return world != null and String(z.get("owner", "")) == String(world.my_faction)
 
 
-## 按当前选中对象算出「该显示哪几页」。
-## ★ 需求原话见本文件上面那一段与 view/page_tabs.gd 的文件头。
+## 按当前选中对象算出「默认停在哪一页」。
+##
+## ★★ 2026.11.19（用户口径）：圆盘页签**永远只有 5 个**（单位 / 将领 / 建筑 / 科技 / X），
+##   不再因为选中对象而增减 / 隐藏。选部队时默认单位页、选建筑 / 区划时默认建筑页，
+##   只是「上一次停在哪一页」的记忆分桶不同；玩家随时可以点任意扇区切过去。
 func _tab_plan() -> Dictionary:
+	var pages := [PageTabsRes.PAGE_BUILD, PageTabsRes.PAGE_UNIT,
+		PageTabsRes.PAGE_GENERAL, PageTabsRes.PAGE_TECH]
 	if input_ctrl == null:
 		return {"kind": "none", "pages": [], "default": ""}
-	# ★★ 敌方**任何**单位 / 建筑 → 右下角整块隐藏（页签 + 命令卡）。
-	#    需求原话（本次）：「选中敌方/友方任何建筑/单位时，右下角标签都隐藏」。
-	#    ★ 它必须排在**所有分支最前面**：敌人的大本营 / 区划中心与自己的长得一样，
-	#      落到下面那几条分支里会给出一整页「升级 / 招募」——
-	#      那是**给敌人下自己的命令**，逻辑层虽然会拒（拒因 faction / zone_owner），
-	#      但界面上摆着一颗点了必然被拒的格子，玩家只会以为功能坏了。
-	#    ★ 老需求「敌对对象保留一颗空格子」已被本次需求取代：现在页签 + 命令卡都收起。
-	#    ★★ 友军（盟友但不是我方）在输入层**也走 `selected_enemy`**（`FactionRes.same_side`
-	#      是严格的 a == b），所以这一条同时覆盖需求里的「敌方 / 友方任何建筑 / 单位」。
-	if _selected_enemy_kind() != "":
-		return _hidden_command_ui_plan()
-	# 区划中心（左键点中心 = 看这个区划的详情）→ **只有自己的区划**给「招募」。
-	# ★★ 2026.10.30：区域特化移除后，区划中心的操作页已经没有内容，
-	#   按需求去掉该页签；点中心默认直接停在招募页。
-	# ★★ 本次需求：友军 / 中立 / 敌方区划的右下角**整块隐藏** —— 玩家不能再对
-	#   别人的区划下命令（逻辑层的 `can_recruit_zone` 仍有一道 owner 校验）。
 	if input_ctrl.selected_zone != null:
-		if not _zone_is_own(input_ctrl.selected_zone):
-			return _hidden_command_ui_plan()
-		return {"kind": "zone_center",
-			"pages": [PageTabsRes.PAGE_RECRUIT],
-			"default": PageTabsRes.PAGE_RECRUIT}
-	# ★★ 建筑：**友军建筑与敌人同一档**（整块隐藏）。自己的建筑里只有
-	#    大本营 / 区划中心有可操作项；其余（木墙 / 哨塔 / 石墙 / 警戒塔 /
-	#    粮田 / 房屋 / 矿脉…）同样整块隐藏。
-	#    ⚠️ 区划中心在 `_tab_plan` 前面那条 `selected_zone != null` 分支里也会命中
-	#      （点中心 = 看区划详情），那条分支同样只给自己的区划「招募」。
+		return {"kind": "building", "pages": pages,
+			"default": PageTabsRes.PAGE_BUILD}
 	if not input_ctrl.selected_buildings.is_empty():
-		if not _buildings_all_own(input_ctrl.selected_buildings):
-			return _hidden_command_ui_plan()
-		var b = _primary_building()
-		if b != null and b.type == BuildingRes.TYPE_BASE:
-			return {"kind": "base", "pages": [PageTabsRes.PAGE_ORDER, PageTabsRes.PAGE_TECH],
-				"default": PageTabsRes.PAGE_ORDER}
-		if b != null and b.type == BuildingRes.TYPE_ZONE_CENTER:
-			return {"kind": "zone_center", "pages": [PageTabsRes.PAGE_RECRUIT],
-				"default": PageTabsRes.PAGE_RECRUIT}
-		# ★★ 2026.10.31：取消建筑升级后，除大本营 / 区划中心外的建筑都没有可操作项
-		#    → 与「选中敌方 / 友军同类建筑」一致：整块隐藏。
-		if not _building_has_actions(b):
-			return _hidden_command_ui_plan()
-		return {"kind": "building", "pages": [PageTabsRes.PAGE_ORDER],
-			"default": PageTabsRes.PAGE_ORDER}
-	# 选中部队 / 单位 → **只有「单位」一页**（默认单位）。
-	# ★★ 2026.11.15 第三轮（用户口径）：部队不再有「操作」页 ——
-	#   移动 / 锁定攻击 / 行军回到右键，操作牌与 3 秒冷却一起删除。
-	# ★ 只有**自己的**部队才给这一页；友军单位同样整块隐藏。
+		return {"kind": "building", "pages": pages,
+			"default": PageTabsRes.PAGE_BUILD}
 	if not _selected_troops(input_ctrl.selected_units).is_empty():
-		if not _units_all_own(input_ctrl.selected_units):
-			return _hidden_command_ui_plan()
-		return {"kind": "unit", "pages": [PageTabsRes.PAGE_UNIT],
+		return {"kind": "unit", "pages": pages,
 			"default": PageTabsRes.PAGE_UNIT}
-	# 什么都没选中 → 「建筑」+「将领」+「科技」三页（默认建筑）。
-	#
-	# ★★ 需求原话（本轮）：「当玩家什么都没选中时，原右下角只有一个建筑页签的地方
-	#    添加一个科技页签，同时该科技页签也会同步到选中大本营时的科技页签中」。
-	#    所以这两页是**同一颗科技页**（同一个 PAGE_TECH、同一套九格内容）——
-	#    点大本营看到的那一页与空手看到的那一页是同一页，不是两份实现。
-	# ★ 默认停在「建筑」：建造入口是没选中任何东西时最常用的操作，
-	#   科技是「看一眼就切回来」的那种页（`_page_memory` 会记住玩家上次停在哪）。
-	#
-	# ⚠️ kind 写成 "empty" 而**不是** "none"：`_page_memory` 是按 kind 分桶记
-	#    「这一类选中上次停在哪一页」的。选中大本营那一类（kind = "base"）会在
-	#    「科技」页上记住 "tech"，一旦与空手这一类共用同一个桶，
-	#    就会出现「点过大本营之后，空手这一屏直接停在科技页」——
-	#    而空手时的默认页是建筑（手玩与测试都按这个前提起步）。
-	#    两类选中的页列表不一样，记忆就必须分开。
-	return {"kind": "empty",
-		"pages": [PageTabsRes.PAGE_BUILD, PageTabsRes.PAGE_GENERAL, PageTabsRes.PAGE_TECH],
+	if _selected_enemy_kind() != "":
+		return {"kind": "enemy", "pages": pages,
+			"default": PageTabsRes.PAGE_BUILD}
+	return {"kind": "empty", "pages": pages,
 		"default": PageTabsRes.PAGE_BUILD}
 
 
@@ -1880,10 +2027,9 @@ func _tab_plan() -> Dictionary:
 ##   玩家自己切到「单位」页之后，不该被下一帧抢回「操作」页。
 ## ★ 换了一类选中时，优先回到这一类**上次停的那一页**（`_page_memory`），
 ##   没有记录才用它自己的默认页。
-## ★★ 空页列表 = **右下角整块隐藏**（自己的无操作建筑 / 敌方 / 友方任何建筑单位）：
-##   页签列（含 `TabsFrame` 外框）与旁边的 3×3 命令卡一起收起 ——
-##   需求原话（本次）：「页签和命令卡都要隐藏，选中敌方/友方任何建筑/单位时，
-##   右下角标签都隐藏」。
+## ★★ 2026.11.19：页签改为**固定 5 项的圆盘**，不再因为选中对象而增减。
+##   `_tab_plan()` 只决定「默认停在哪一页」与页记忆的 kind；圆盘本身始终可点。
+##   观战时整块隐藏；X 收起时只收手牌，圆盘保留（点扇区 / 再点 X 恢复）。
 func _sync_tabs() -> void:
 	if page_tabs == null:
 		return
@@ -1892,33 +2038,61 @@ func _sync_tabs() -> void:
 		if command_card != null:
 			command_card.visible = false
 		return
+	# X 收起：手牌 / 科技九格收起，但圆盘保留 —— 玩家点任意扇区就能恢复。
+	if _hand_collapsed:
+		page_tabs.visible = true
+		page_tabs.set_page_silent(PageTabsRes.PAGE_CLOSE)
+		if command_card != null:
+			command_card.visible = false
+		if tech_grid != null:
+			tech_grid.set_visible_page(false)
+		return
 	var plan := _tab_plan()
-	var pages: Array = plan["pages"]
+	var pages: Array = (plan["pages"] as Array).duplicate()
 	# ★★ 可见性**每帧都写**：下面的 `key == _tab_key` 短路会跳过「同一类选中」的刷新，
 	#   而 visible 也可能被别的入口（观战 / 测试 / 以后的外部调用）改过。
 	var show_ui := not pages.is_empty()
 	page_tabs.visible = show_ui
 	if command_card != null:
 		command_card.visible = show_ui
-	var key := String(plan["kind"])
+	var kind := String(plan["kind"])
+	# ★★ 2026.11.19：选中己方对象时自动跳到对应页（只在**选中变了**时跳一次，
+	#   玩家随后手动切页不会被每帧拉回去）。
+	if show_ui:
+		var hint := _selection_page_hint()
+		var sel_sig := _selection_anim_sig()
+		if hint != "" and sel_sig != "" and sel_sig != _page_jump_sig:
+			_page_jump_sig = sel_sig
+			_tab_kind = kind
+			if page_tabs.page() != hint:
+				_sync_tabs_guard = true
+				page_tabs.select_page(hint)
+				_sync_tabs_guard = false
+		elif sel_sig == "":
+			_page_jump_sig = ""
+	var key := kind
 	if not show_ui:
 		key += "|hidden"
 	for p in pages:
 		key += "|" + String(p)
 	if key == _tab_key:
 		return
-	_tab_kind = String(plan["kind"])
+	_tab_kind = kind
 	_tab_key = key
 	if not show_ui:
-		# 把页签内部状态也清空：下次显示另一类选中时，`set_pages()` 才不会因为
-		# 「组合没变」而留着上一批按钮 / 上一页。它会同步发 page_changed → 重建命令卡；
-		# 命令卡的 visible 已在上面关掉（页签与命令卡是同一块「右下角」）。
+		# 观战 / 剧本隐藏：把圆盘内部状态清空，恢复时重新建立。
 		_sync_tabs_guard = true
 		page_tabs.set_pages([], "")
 		_sync_tabs_guard = false
 		return
-	var preferred := String(_page_memory.get(_tab_kind, plan["default"]))
-	# ★★ 2026.11.19：这一段是「按选中对象换页签」，不是玩家主动切页 ——
+	# ★★ 2026.11.19：不记忆「换页签前停在哪一页」。
+	#   没选中 / 敌人 / 友军时**保持当前页**；只有 X 收起（当前页是 close）或还没选过页时
+	#   才落到默认页。这样点空地取消选中不会把页签抢回建筑 / 操作页。
+	var preferred := ""
+	var cur_page := String(page_tabs.page())
+	if cur_page == "" or cur_page == PageTabsRes.PAGE_CLOSE:
+		preferred = String(plan["default"])
+	# ★★ 2026.11.19：这一段是「按选中对象换默认页」，不是玩家主动切页 ——
 	#   `set_pages()` 里的同步 page_changed 不播入场动效（见 `_on_page_changed`）。
 	_sync_tabs_guard = true
 	page_tabs.set_pages(pages, preferred)
@@ -2192,6 +2366,10 @@ func point_hits_ui(global_pos: Vector2) -> bool:
 	#    屏幕上没东西可点。
 	var detail_on := is_detail_visible()
 	var cmd_on := _command_ui_visible()
+	# ★★ 2026.11.19：X 收起后命令卡隐藏、但圆盘仍在 —— 圆盘自己也要吃掉点击。
+	if page_tabs != null and page_tabs.visible \
+			and page_tabs.get_global_rect().has_point(global_pos):
+		return true
 	var tabs_n: int = page_tabs.page_count() if cmd_on and page_tabs != null else 0
 	if UiLayoutRes.point_hits_any(
 			UiLayoutRes.interactive_rects(vp, detail_on, cmd_on, tabs_n), global_pos):
@@ -2401,6 +2579,8 @@ func _hover_detail(src: String, entry: Dictionary) -> Dictionary:
 	match String(entry.get("type", "")):
 		"build":
 			return _hover_build(entry)
+		"base_upgrade":
+			return _hover_base_upgrade(entry)
 		"recruit", "zone_recruit", "general_drag":
 			return _hover_recruit(entry)
 		"building_upgrade", "building_upgrade_cancel", "building_upgrade_max", \
@@ -2537,6 +2717,20 @@ func _unit_lock_note(entry: Dictionary) -> String:
 	if not bool(entry.get("ready", true)):
 		return "需%s级大本营" % _fmt_num(float(entry.get("min_base", entry.get("tier", 1))))
 	return ""
+
+
+## ★★ 2026.11.19：建筑页的大本营牌 —— 造价 + 升到几级 + 为什么不能升。
+func _hover_base_upgrade(entry: Dictionary) -> Dictionary:
+	var base = world.find_base_of(String(world.my_faction)) if world != null else null
+	var title := String(entry.get("name", "大本营"))
+	if base == null:
+		return _hover_card(title, "升级", [], "结果", ["大本营不存在"])
+	var chips: Array = ["升到%d级" % (int(base.level) + 1)]
+	var note := ""
+	if not bool(entry.get("ready", true)):
+		note = _upgrade_reject_text(String(entry.get("lock_reason", "")), base)
+	return _hover_card(title, "升级", _cost_cells(world.building_upgrade_cost(base)),
+		"结果", chips, note, "把这张牌拖到己方大本营上升级")
 
 
 ## 建筑（建筑页那几格：木墙 / 哨塔 / 石墙 / 警戒塔）—— **造价格 + 远程免伤**。
@@ -2683,6 +2877,30 @@ func _build_entries() -> Array:
 		slots.append({})
 	if cfg == null:
 		return slots
+	# ★★ 2026.11.19（用户口径）：大本营牌固定在建筑页第 1 格（Q）。
+	#   拖到己方大本营上 = 升级；大本营满级（默认 3 级）后这张牌从手牌移除。
+	var base = null
+	var base_show := false
+	var base_cap := 3
+	if world != null:
+		base = world.find_base_of(String(world.my_faction))
+		if base != null:
+			base_cap = world.building_level_cap(base)
+			base_show = int(base.level) < base_cap
+	if base_show:
+		var why: String = world.building_upgrade_reason(base, world.my_faction)
+		slots[0] = {
+			"type": "base_upgrade",
+			"name": String(base.display_name()),
+			"desc": "拖到己方大本营上升级（%d → %d 级）" % [
+				int(base.level), int(base.level) + 1],
+			"icon_mask": UnitCardIconRes.mask_for_building(String(base.type)),
+			"tier": 1,
+			"min_base": 1,
+			"base_level": int(base.level),
+			"ready": why == "",
+			"lock_reason": why,
+		}
 	# ① 按 tier 分组（组内保持 config 顺序）。
 	var rows: Dictionary = {}
 	# ★★ 2026.11.18：建筑页按**派系**过滤 —— 教堂只有「帝国·教会军」有这张牌，
@@ -2707,6 +2925,8 @@ func _build_entries() -> Array:
 		var row_start: int = (tier - 1) * 3
 		var list: Array = rows[tier]
 		var used: Dictionary = {}
+		if base_show and tier == 1:
+			used[0] = true             # Q 格被大本营牌占住
 		var explicit: Dictionary = {}
 		for d in list:
 			var e: Dictionary = d
@@ -2717,6 +2937,8 @@ func _build_entries() -> Array:
 			var idx: int = row_start + col - 1
 			if idx < row_start or idx >= row_start + 3 or idx >= UiLayoutRes.CARD_SLOTS:
 				continue
+			if base_show and idx == 0:
+				continue               # Q 让给大本营牌
 			if used.has(idx):
 				continue                 # 同一格重复写：先到先得，后来者走自动补位
 			used[idx] = true
@@ -2742,6 +2964,9 @@ func _build_entries() -> Array:
 	for i in slots.size():
 		var s: Dictionary = slots[i]
 		if s.is_empty():
+			continue
+		# 大本营牌的 ready / 锁定原因按「这一栋现在能不能升」算，不走 tier 解锁。
+		if String(s.get("type", "")) == "base_upgrade":
 			continue
 		s["base_level"] = level
 		# ★ 解锁判定用 `min_base`（教堂 = 1），而不是「画在第几行」。
@@ -3148,6 +3373,10 @@ func _on_card_entry(entry: Dictionary) -> bool:
 			show_notice("将领牌要拖到己方区划中心的圈里松手：落点就是招募的区划")
 		"building_upgrade", "building_upgrade_cancel":
 			return _on_building_action(entry)
+		"base_upgrade":
+			# ★★ 2026.11.19：大本营牌只能拖到大本营上，不走点击。
+			show_notice("把大本营牌拖到己方大本营上松手，才能升级")
+			return false
 		"building_demolish":
 			# ★ 拆除必须走**拖拽**：键盘 / 点击到这里只给一句可执行的提示，
 			#   避免一次误触就把建筑拆了。
@@ -3745,6 +3974,10 @@ func blocks_edge_scroll(global_pos: Vector2) -> bool:
 		return true
 	if ai_panel != null and ai_panel.visible and ai_panel.get_global_rect().has_point(global_pos):
 		return true
+	# ★★ 2026.11.19：圆盘在 X 收起后仍然可见（命令卡隐藏），它也要拦住边缘滚屏。
+	if page_tabs != null and page_tabs.visible \
+			and page_tabs.get_global_rect().has_point(global_pos):
+		return true
 	var vp := view_size()
 	var margin: float = cfg.camera_edge_size if cfg != null else 0.0
 	if UiLayoutRes.in_edge_band(vp, global_pos, margin):
@@ -3786,6 +4019,9 @@ func blocks_wheel_zoom(global_pos: Vector2) -> bool:
 	if options_panel != null and options_panel.is_open():
 		return true
 	if ai_panel != null and ai_panel.visible and ai_panel.get_global_rect().has_point(global_pos):
+		return true
+	if page_tabs != null and page_tabs.visible \
+			and page_tabs.get_global_rect().has_point(global_pos):
 		return true
 	return UiLayoutRes.point_hits_any(
 		UiLayoutRes.bottom_bar_rects_v2(view_size(), is_detail_visible(), _command_ui_visible()),
@@ -3854,6 +4090,95 @@ func _card_sig() -> String:
 func _refresh_card_if_changed() -> void:
 	if _card_sig() != _card_sig_key:
 		_rebuild_card()
+
+
+## ★★ 2026.11.19：当前选中的**己方部队 / 建筑**签名。
+##   · 部队：排序后的单位 id（同一批单位换顺序不算换选中）；
+##   · 建筑：排序后的 `type@tx,ty`（城墙 → 箭塔也算换选中）；
+##   · 己方区划中心：`z:<id>`（它是通过 `selected_zone` 选中的）；
+##   · 空 / 敌方 / 友军 → 空串（不播手牌入场）。
+func _selection_anim_sig() -> String:
+	if input_ctrl == null or world == null:
+		return ""
+	if not input_ctrl.selected_units.is_empty() \
+			and _units_all_own(input_ctrl.selected_units):
+		# ★ 用「部队队长 id」而不是每个小兵的 id：同一支部队补员 / 阵亡不会
+		#   触发整手牌重播；换到另一支部队才会变。
+		var ids: Array[String] = []
+		for u in input_ctrl.selected_units:
+			if u == null or not u.alive:
+				continue
+			var key := String(u.leader_id)
+			if key == "":
+				key = String(u.id)
+			if not ids.has(key):
+				ids.append(key)
+		ids.sort()
+		return ("u:" + ",".join(ids)) if not ids.is_empty() else ""
+	if not input_ctrl.selected_buildings.is_empty() \
+			and _buildings_all_own(input_ctrl.selected_buildings):
+		var keys: Array[String] = []
+		for b in input_ctrl.selected_buildings:
+			if b != null and b.alive:
+				keys.append("%s@%d,%d" % [String(b.type), int(b.tx), int(b.ty)])
+		keys.sort()
+		return ("b:" + ",".join(keys)) if not keys.is_empty() else ""
+	if input_ctrl.selected_zone != null and _zone_is_own(input_ctrl.selected_zone):
+		var zd: Dictionary = input_ctrl.selected_zone
+		return "z:%d" % int(zd.get("id", -1))
+	return ""
+
+
+## ★★ 2026.11.19（用户口径）：选中己方对象时，圆盘自动跳到对应页：
+##   · 己方部队 → 单位
+##   · 己方普通建筑 → 建筑
+##   · 己方区划中心 → 将领
+##   · 己方大本营 → 科技
+## 敌方 / 友军 / 什么都没选中 → 返回 ""（保持当前页）。
+func _selection_page_hint() -> String:
+	if input_ctrl == null or world == null:
+		return ""
+	if not input_ctrl.selected_units.is_empty() \
+			and _units_all_own(input_ctrl.selected_units):
+		return PageTabsRes.PAGE_UNIT
+	if input_ctrl.selected_zone != null and _zone_is_own(input_ctrl.selected_zone):
+		return PageTabsRes.PAGE_GENERAL
+	if not input_ctrl.selected_buildings.is_empty() \
+			and _buildings_all_own(input_ctrl.selected_buildings):
+		var has_base := false
+		var has_zone := false
+		for b in input_ctrl.selected_buildings:
+			if b == null or not b.alive:
+				continue
+			if String(b.type) == BuildingRes.TYPE_BASE:
+				has_base = true
+			elif String(b.type) == BuildingRes.TYPE_ZONE_CENTER:
+				has_zone = true
+		if has_base:
+			return PageTabsRes.PAGE_TECH
+		if has_zone:
+			return PageTabsRes.PAGE_GENERAL
+		return PageTabsRes.PAGE_BUILD
+	return ""
+
+
+## 选中对象变了、且新选中对象是**己方部队 / 建筑**时，整手牌播一次入场。
+## ★ 只认选中变化：同一对象每帧刷新不会重播；手动切页由 `_on_page_changed` 负责。
+func _animate_hand_on_selection_change() -> void:
+	var sig := _selection_anim_sig()
+	if sig == _hand_anim_sig:
+		return
+	_hand_anim_sig = sig
+	if sig == "":
+		return
+	if command_card == null or not command_card.visible:
+		return
+	var page := String(page_tabs.page()) if page_tabs != null else ""
+	if page == PageTabsRes.PAGE_TECH:
+		if tech_grid != null and tech_grid.visible:
+			tech_grid.animate_deck_in()
+		return
+	command_card.animate_deck_in()
 
 
 ## 当前设计空间大小（canvas_items + expand 拉伸后可能比 1920×1080 大）
@@ -3994,6 +4319,9 @@ func _refresh_shell() -> void:
 	#   命令卡那条路只在「签名变了」时跑（`_refresh_card_if_changed`），跟不上
 	#   「玩家点了一格科技」这种变化。
 	_refresh_tech_grid(page_tabs != null and String(page_tabs.page()) == PageTabsRes.PAGE_TECH)
+	# ★★ 2026.11.19（用户口径）：选中任意己方部队 / 建筑（含部队 ↔ 建筑切换）时，
+	#   整手牌播一次入场动效。手动切页仍由 `_on_page_changed` 播，不会重复。
+	_animate_hand_on_selection_change()
 	# ★ AI 队友面板：只在有同方 commander 时显示，状态读 world（客机读快照）。
 	if ai_panel != null:
 		ai_panel.world = world

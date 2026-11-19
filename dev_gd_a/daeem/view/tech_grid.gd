@@ -723,9 +723,11 @@ func _animate_used_card_in(i: int) -> void:
 	var r: Rect2 = slot["rect"]
 	var rot: float = slot["rot"]
 	var ordinal: int = slot["ordinal"]
-	var start := Vector2(r.position.x, UiLayoutRes.CARD_RECT.size.y + 8.0)
+	var card_center_x := r.position.x + r.size.x * 0.5
+	var side := signf(card_center_x - UiLayoutRes.CARD_RECT.size.x * 0.5)
+	var start := Vector2(r.position.x + side * 8.0, UiLayoutRes.CARD_RECT.size.y + 8.0)
 	cell.position = start
-	cell.rotation = 0.0
+	cell.rotation = side * deg_to_rad(3.0)
 	cell.size = r.size
 	cell.scale = Vector2.ONE
 	cell.pivot_offset = UiLayoutRes.card_pivot(r.size)
@@ -1097,21 +1099,27 @@ func animate_deck_in() -> void:
 		var rot := UiLayoutRes.card_fan_rotation(ordinal, count)
 		_cells[i].modulate.a = 0.0
 		_cells[i].scale = Vector2.ONE
-		# ★★ 2026.11.18：与命令卡同一套入口（起点下移 26px、旋转 ×0.5）。
+		# ★★ 2026.11.19：与命令卡同一套「抽牌」入口（横向错开 + 更多旋转）。
+		var mid := (float(count) - 1.0) * 0.5
+		var away := float(ordinal) - mid
+		var edge := 0.0 if mid <= 0.0 else absf(away) / mid
+		var side := 0.0 if absf(away) < 0.001 else signf(away)
 		_cells[i].pivot_offset = UiLayoutRes.card_pivot(target.size)
-		_cells[i].position = target.position + Vector2(0.0, 26.0)
-		_cells[i].rotation = rot * 0.5
+		_cells[i].position = target.position + Vector2(side * (6.0 + 8.0 * edge),
+			26.0 + 6.0 * edge)
+		_cells[i].rotation = rot * 1.35
 		_cells[i].z_index = ordinal
 	_deck_tween = create_tween().set_parallel(true)
+	var mid_ord := (float(count) - 1.0) * 0.5
 	for ordinal in count:
 		var i := visible_cells[ordinal]
 		var target := UiLayoutRes.card_fan_local(ordinal, count)
 		var rot := UiLayoutRes.card_fan_rotation(ordinal, count)
-		var delay := float(ordinal) * 0.018
-		_deck_tween.tween_property(_cells[i], "position", target.position, 0.18) \
-			.set_delay(delay).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-		_deck_tween.tween_property(_cells[i], "rotation", rot, 0.18) \
-			.set_delay(delay).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
+		var delay := absf(float(ordinal) - mid_ord) * 0.018
+		_deck_tween.tween_property(_cells[i], "position", target.position, 0.22) \
+			.set_delay(delay).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+		_deck_tween.tween_property(_cells[i], "rotation", rot, 0.22) \
+			.set_delay(delay).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 		_deck_tween.tween_property(_cells[i], "modulate:a", 1.0, 0.14).set_delay(delay)
 
 

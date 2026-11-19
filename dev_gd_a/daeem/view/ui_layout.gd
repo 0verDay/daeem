@@ -249,8 +249,10 @@ const CARD_KEY_TO_SLOT := {
 ## ★★ 2026.11.15 第二轮：加「将领」页 ⇒ 最宽要放得下 3 颗。
 ## 右缘不变（1894），所以 1 颗 / 2 颗时的**绝对位置与旧版一模一样**，
 ## 只是本地坐标整体右移了 81（旧宽 154 的空白被填上了）。
-const TABS_RECT := Rect2(1659.0, 914.0, 235.0, 94.0)
-const TABS_COUNT := 3
+## ★★ 2026.11.19：页签改成右下角的**圆盘选择器**（建筑 / 单位 / 将领 / 科技 + 中心 X）。
+##   这里是圆盘的外接正方形：直径 184px，贴右下角；顶部向上扩出旧页签栏高度。
+const TABS_RECT := Rect2(1710.0, 884.0, 184.0, 184.0)
+const TABS_COUNT := 5
 
 ## ------------------------------------------------------------------
 ## ★★ 选项页不再有「屏幕上的按钮」（2026.11.14 第三轮，用户口径：
@@ -851,15 +853,25 @@ static func card_tuck_offset(size: Vector2, t: float) -> Vector2:
 	return Vector2(0.0, CARD_TUCK_PX * tt - size.y * (1.0 - s) * 0.5)
 
 
-## 页签第 i 个牌签（相对面板）：靠右下角并排错开；单个页签也靠右对齐。
-static func tab_button_local(i: int, count: int = TABS_COUNT) -> Rect2:
-	var n: int = maxi(1, mini(count, TABS_COUNT))
-	var w := 73.0
-	var h := 94.0
-	var gap := 8.0
-	var total := float(n) * w + float(n - 1) * gap
-	var x := TABS_RECT.size.x - total + float(i) * (w + gap)
-	return Rect2(x, 0.0, w, h)
+## 圆盘第 i 个扇区的**文字 / 命中参考矩形**（相对面板）。
+## 顺序与 `view/page_tabs.gd` 的 `SECTOR_ORDER` 一致：
+##   0=单位（左上）、1=将领（右上）、2=建筑（左下）、3=科技（右下）、4=中心 X。
+## ★ 这不是按钮的真实尺寸（圆盘用角度 / 半径命中）；测试与输入挡板只需要一个
+##   落在该扇区里的矩形。
+static func tab_button_local(i: int, _count: int = TABS_COUNT) -> Rect2:
+	var c := TABS_RECT.size * 0.5
+	var radius := minf(TABS_RECT.size.x, TABS_RECT.size.y) * 0.5 - 6.0
+	var inner := radius * 0.42
+	var mid := (inner + radius) * 0.5
+	var dirs := [Vector2(-1.0, -1.0), Vector2(1.0, -1.0),
+		Vector2(-1.0, 1.0), Vector2(1.0, 1.0)]
+	var size := Vector2(72.0, 28.0)
+	var pos := c
+	if i >= 0 and i < dirs.size():
+		pos = c + (dirs[i] as Vector2).normalized() * mid
+	elif i != 4:
+		size = Vector2.ZERO
+	return Rect2(pos - size * 0.5, size)
 
 
 ## 页签第 i 个按钮（设计空间）
@@ -1038,10 +1050,11 @@ static func interactive_rects(view_size: Vector2, detail_visible: bool = true,
 		var hand := CARD_RECT
 		hand.position += center_shift(view_size)
 		out.append(hand)
-		for i in mini(TABS_COUNT, maxi(0, tabs_count)):
-			var r2 := tab_button_rect(i, mini(TABS_COUNT, maxi(1, tabs_count))) # 实际牌签
-			r2.position += shift
-			out.append(r2)
+		# ★★ 2026.11.19：页签改成圆盘后只登记**整块外接正方形**一次
+		#   （圆盘内部用角度 / 半径命中，不再拆成 5 个矩形）。
+		var dial := TABS_RECT
+		dial.position += shift
+		out.append(dial)
 	# ★★ 左下详情牌**不在这里**（V2 之后）：它不再是「一整块都能点」的方格阵列，
 	#   真正能点的只有成员格 / 其他部队格那几颗小方块（由控件自己算，
 	#   见 detail_v2.interactive_rects() → hud 的 `blocks_edge_scroll`）。
