@@ -1266,7 +1266,7 @@ func _setup_ai_factions() -> void:
 ##   3. 开资源池 + 初始化指令（所有 commander 默认 auto = 自主发展 / 扩张 / 攻击）；
 ##   4. new() 控制器并 setup（计时器 / 统计 / 难度）。
 ##
-## ★★ 玩家的四条指令是**临时倾向**（`until`），到期回到 auto；不是永久状态。
+## ★★ 玩家的求援指令是**临时倾向**（`until`），到期回到 auto；不是永久状态。
 ## ⚠️ `with_ai == false`（客机 / 测试的干净世界）时整段跳过：不建控制器、不刷指令。
 func _setup_ai_commanders() -> void:
 	if not with_ai:
@@ -2544,10 +2544,14 @@ func is_commander_side(faction: String) -> bool:
 ## 口径：
 ##   · 只有**同方**的玩家能指挥（`same_side_for_attack`；合作 AI 队友与玩家是盟友）；
 ##   · 目标必须是 commander（不能指挥 garrison / reddot / 敌方）；
-##   · march / mass 必须带一个地图内、可通行的点；develop / expand 忽略坐标；
+##   · reinforce / march / mass 必须带一个地图内、可通行的点；develop / expand 忽略坐标；
 ##   · 接受后写 `ai_directives`、序号 +1、通知控制器清掉旧命令缓存；
-##   · 保持 `command_hold_sec` 秒；march 在「全部到点 + 目标点清场」时可提前
-##     由 `end_ai_directive()` 结束（见 `logic/ai_army.gd` 的 `_march_reached_clear()`）。
+##   · 保持 `command_hold_sec` 秒；march / reinforce 在任务完成时可提前
+##     由 `end_ai_directive()` 结束（见 `logic/ai_army.gd` 的 `_march_reached_clear()` /
+##     `_reinforce_cleared()`）。
+##
+## ★ 2026.11.20：玩家面板只暴露 `reinforce`（求援）；march / develop / expand / mass
+##   仍保留为内部 / 旧测试路径，不再由 `view/ai_order_panel.gd` 发出。
 func set_ai_directive(ai_faction: String, order: String, x: float, y: float,
 		sender_faction: String) -> String:
 	if ai_faction == "" or sender_faction == "":
@@ -2558,11 +2562,12 @@ func set_ai_directive(ai_faction: String, order: String, x: float, y: float,
 		return "not_commander"
 	if not FactionRes.same_side_for_attack(ai_faction, sender_faction):
 		return "not_ally"
-	if order != "march" and order != "develop" and order != "expand" and order != "mass":
+	if order != "reinforce" and order != "march" and order != "develop" \
+			and order != "expand" and order != "mass":
 		return "bad_order"
 	var tx := int(floor(x))
 	var ty := int(floor(y))
-	if order == "march" or order == "mass":
+	if order == "reinforce" or order == "march" or order == "mass":
 		if map == null or not map.tile_exists(tx, ty):
 			return "out_of_map"
 		if not PathfinderRes.passable(map, buildings, cfg, tx, ty, ai_faction):
@@ -2574,7 +2579,7 @@ func set_ai_directive(ai_faction: String, order: String, x: float, y: float,
 			ty = snapped.y
 	var d: Dictionary = ai_directives[ai_faction]
 	d["kind"] = order
-	if order == "march" or order == "mass":
+	if order == "reinforce" or order == "march" or order == "mass":
 		d["x"] = float(tx) + 0.5
 		d["y"] = float(ty) + 0.5
 	else:
@@ -2583,7 +2588,7 @@ func set_ai_directive(ai_faction: String, order: String, x: float, y: float,
 	d["serial"] = int(d.get("serial", 0)) + 1
 	d["since"] = time
 	# ★★ 玩家指令最多保持 `command_hold_sec` 秒（默认 60），到期自动回到 auto。
-	#    march 还会在「全部到点 + 目标点清场」时提前结束（`end_ai_directive()`）。
+	#    reinforce / march 还会在任务完成时提前结束（`end_ai_directive()`）。
 	#    连点同一条会刷新这个时间；`auto` 是内部战略，不会由这里写入。
 	var hold := maxf(0.0, float(cfg.num("ai.commander.command_hold_sec", 60.0)))
 	d["until"] = time + hold if hold > 0.0 else 0.0
@@ -2595,7 +2600,7 @@ func set_ai_directive(ai_faction: String, order: String, x: float, y: float,
 	return ""
 
 
-## ★★ 主动结束一条玩家指令（行军到点且清场时由 AI 调用）。
+## ★★ 主动结束一条玩家指令（行军到点 / 求援完成时由 AI 调用）。
 ##    与 60 秒到期走**同一条收口**：kind=auto、清目标点、serial+1、通知控制器。
 ## @return true = 确实结束了一条进行中的指令
 func end_ai_directive(ai_faction: String, reason: String = "") -> bool:
@@ -2730,7 +2735,7 @@ func ai_teammates_for(faction: String) -> Array:
 func ai_directive_target(faction: String) -> Variant:
 	var d: Dictionary = ai_directive_of(faction)
 	var kind := String(d.get("kind", ""))
-	if kind != "march" and kind != "mass":
+	if kind != "reinforce" and kind != "march" and kind != "mass":
 		return null
 	var x := float(d.get("x", -1.0))
 	var y := float(d.get("y", -1.0))

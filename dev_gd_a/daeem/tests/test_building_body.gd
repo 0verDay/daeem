@@ -215,13 +215,13 @@ func _test_wall_unchanged(cfg) -> void:
 		return
 	ok(wall.body_scale(cfg) == 1.0, "城墙 body_scale = 1.0（本体就是整格）")
 	ok(wall.blocks("enemy"), "城墙对敌方整格阻挡")
-	ok(wall.blocks("p1"), "★★ 城墙对己方也整格阻挡（不分阵营）")
-	ok(wall.body_blocks("enemy") and wall.body_blocks("p1"),
-		"★★ 城墙本体对双方都挡")
+	ok(not wall.blocks("p1"), "★★ 城墙对己方放行（按势力阻挡）")
+	ok(wall.body_blocks("enemy") and not wall.body_blocks("p1"),
+		"★★ 城墙本体只挡敌方")
 	ok(not PathfinderRes.passable(w.map, w.buildings, cfg, t.x, t.y, "enemy"),
 		"敌方不能进城墙那一格")
-	ok(not PathfinderRes.passable(w.map, w.buildings, cfg, t.x, t.y, "p1"),
-		"★★ 己方也不能进城墙那一格")
+	ok(PathfinderRes.passable(w.map, w.buildings, cfg, t.x, t.y, "p1"),
+		"★★ 己方能进城墙那一格")
 
 	var spot := Vector2i(-1, -1)
 	for ty in range(2, w.map.rows - 2):

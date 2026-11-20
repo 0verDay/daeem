@@ -33,12 +33,12 @@ func _initialize() -> void:
 				print("t=%.1f army=%d food=%.0f gold=%.0f base=%d stats=%s" % [
 					w.time, c.panel_state()["army"], c.panel_state()["food"],
 					c.panel_state()["gold"], w.base_level_of("F2"), c.stats])
-	# 试一条行军指令
-	var reason = w.set_ai_directive("F2", "march", 10.0, 10.0, "F1")
-	print("march reason=", reason, " dir=", w.ai_directive_of("F2"))
+	# 试一条求援指令
+	var reason = w.set_ai_directive("F2", "reinforce", 10.0, 10.0, "F1")
+	print("reinforce reason=", reason, " dir=", w.ai_directive_of("F2"))
 	for i in 100:
 		w.tick(0.1)
 	var c2 = w.ai_commanders.get("F2", null)
 	if c2 != null:
-		print("after march stats=", c2.stats, " panel=", c2.panel_state())
+		print("after reinforce stats=", c2.stats, " panel=", c2.panel_state())
 	quit(0)

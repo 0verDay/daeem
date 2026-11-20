@@ -7,6 +7,49 @@
 
 本版本为在godot引擎内的原型开发，仅展示完整的局内玩法
 
+### 2026.11.20 红点减弱 + 存活上限 + 编辑器适配
+
+1. **需求**（用户口径）：首波延后到 3 分钟（间隔不变）；将领数最多 3 位，但附属兵可以逐波增加；编辑器也要能配。
+2. **新上限 `ai.reddot.max_alive`**：0 = 无限（默认）；> 0 = 这一方**活着的单位**达到上限后，新波次整位跳过（不刷「将领 + 半队附属」）。倒地未死的也计数，避免再起后超上限。红点被打光后仍会继续按时间表补刷。
+3. **每波将领数上限 `general_count_max`**：0 = 不设上限；`general_count_expr` 算出来后再夹一次。
+4. **附属兵数量表达式 `escort_count_expr`**：非空时每波按 `y = a·x + b` 求值（可让附属兵逐渐增加）；空 = 用固定的 `escort_count`；解析失败退回固定值。新增 `escort_count_max` = 每位将领的附属兵数量上限（0 = 不设上限）。
+5. **登神长阶数值**（`dengshen_changjie.json`）：首波 **3:00**，之后每 **2:30** 一波（`2.5x+0.5`）；每波将领数 `0.5x+0.5` 且 `general_count_max = 3`；附属兵 `0.5x+0.5` 且 **`escort_count_max = 5`**（固定值 2 兜底）；`max_alive = 24`。
+6. **编辑器**：红点页新增「将领数上限」「附属兵上限」输入框，以及「附属兵数（x）」表达式输入框（空 = 用下面的固定数量）；`model.py` 同步校验三个新键。
+7. **测试**：`test_ai` 新增「将领数封顶 + 附属兵逐波增加」断言；编辑器 `test_model` / `test_app` 增加对应校验与侧栏字段断言。实测 13 分钟场上红点不超过 24（旧配置同期 40+），基地存活从 485 秒提升到约 826 秒。
+
+### 2026.11.20 城墙分势力阻挡 + AI 学会拆墙
+
+1. **需求**（用户口径）：城墙不再对所有阵营一律阻挡 —— **城墙不阻挡与其同边的单位**；敌方 / 中立照旧被挡死。
+2. **通行规则**：`Building.blocks()` / `body_blocks()` 对墙类改用 `FactionRes.same_side_for_attack(faction, owner)`（含盟友）：同方放行，异方整格挡死；其它建筑的规则不变。远程攻击越墙的既有规则不变。
+3. **AI 拆墙**：`ai_army._order_team()` 行军前先做一次「队长 → 目标」寻路；没路就调用 `Pathfinder.find_blocking_wall_toward()`（现在接受**任意墙类**，并跳过同方 / 盟友的墙），再通过新增的 `command_processor.order_group_attack_building()` 让整队拆掉挡路的那一段。拆开后下一 tick 自动恢复原目标。
+4. **统计 / 文案**：`ai_commander` 统计新增 `wall_orders`；状态文案新增「破墙中」。
+5. **配置**：`config.json` 城墙 `brief / desc / _body_comment` 改为「按势力阻挡」；测试同步更新 `test_logic` / `test_alliance` / `test_building_body`，`test_ai_commander` 新增围城破墙断言。
+
+### 2026.11.20 合作地图「登神长阶」从 Excel 导入
+
+1. **需求**（用户口径）：读取 `dev_gd_a/map_excel/合作任务：新登神长阶.xlsx`，写成游戏可直接读取的地图 / 合作关卡。
+2. **地图**：有效区 = Excel `K3:AQ53`，导出为 **33×51**；J 列及以左是图例、AS 及以右忽略。地形按色块映射（山 / 水 / 森林），16 个红底格 = 16 个区划中心。
+3. **区划**：黑细线框出的矩形 = 16 个区划（每个红心一个框）；**水域 / 山地 / 森林不属于任何区划（zone = -1）**，区划地块只收草地；墙格照常属于所在区划。`人/金/粮` → population / gold / food，后面的数字写入关卡 `zones[].build_point_count`。
+4. **建筑**：数字 1/2/5/6/7 → 警戒塔 / 哨塔 / 粮田 / 房屋 / 矿脉；橙色 / 灰色块 → 木墙 / 石墙；p1 / p2 → 玩家大本营。**只有白底格里的数字才算建筑**（无填充的数字视为备注，不生成塔）；建筑全部写进 `map.json` 的 `buildings`，owner 跟随所在区划，并且只放在草地上。
+5. **守军**：`<n>` = 1 名 `enemy` 守将 + n 个附属兵，挂 `ai: garrison` 并按所在区划巡逻；29 个标记共 188 个附属兵。兵种按 4 种职责轮换（长枪 / 长弓 / 骑手 / 骑士），权重和为 1。
+6. **玩家与目标**：p1/p2 各 1 名 `general_0`（0 附属兵）；基地所在区划归各自（Z13 / Z14），**Z10 / Z11 / Z12 / Z15 无归属**，其余 10 个区划归 `df`；双方目标 = 占领顶部「人0」区划（zone 1）。只保留 p1/p2 盟友关系，不再额外声明 df/enemy 盟友。
+7. **编制上限**：关卡**摆放**的守军不再检查 `escort_count ≤ 编制上限`（`<12>` 可正常生成）；运行时招募 / 补员仍受 `effective_retinue_cap` 限制。运行时 `level.gd` 与战役编辑器校验同步。
+8. **文件**：新增 `data/maps/dengshen_changjie/map.json`、`data/campaigns/demo/levels/dengshen_changjie.json`；`campaign.json` / `editor_visible.json` 登记；Excel 旁保留 `map_excel/_convert.py` 以便重导，并生成 `map_excel/dengshen_changjie_map.html` 可视化预览。
+9. **红点**：关卡 `factions[]` 新增 `red1`（`ai: "reddot"`）；从地图顶部两角刷波，行军目标为 p1 / p2 基地区域。`wave_time_expr = "x+1"`（首波 2 分钟，之后每 1 分钟）、`general_count_expr = "x"`、每将 3 个附属兵（长枪 0.6 / 长弓 0.4）、无限波；`df` / `enemy` / `red1` 互为盟友，避免红点落地就被守军打掉。实测 120 秒首波生成 4 个单位，之后保持存活。
+10. **边缘区**：16 个区划都写入 `zones[].no_go`，按实际草地块的切比雪夫距离生成（相邻区划、森林 / 水 / 山洞口、地图外都算边缘），红心本身不放进 `no_go`。**df 区划用 2 格边缘；中立 / 玩家方区划（Z10 / Z11 / Z12 / Z13 / Z14 / Z15）用 1 格边缘**。如果 2 格边缘 + 中心 3×3 禁建圈会把建造点位吃光，则该区自动退成 1 格；现在 `level.check()` 无警告。
+11. **测试**：`test_coop_catalog` 新增目录断言；`test_campaign_menu` / `test_logic` / `test_map_editor` / `test_coop_menu` 全过；战役编辑器 `test_model` 418 / `test_app` 302 全过；新关卡 `level.check()` 0 条拦截，世界可正常装配并跑 60 秒。
+
+
+### 2026.11.20 友军 AI 指令收敛为「求援」
+
+1. **需求**（用户口径）：合作模式 AI 队友的四个指令（行军 / 发展 / 扩张 / 屯兵）改为**只剩一个「求援」**；点按钮后点场上地点，AI 视情况派兵支援该地。
+2. **面板**：`view/ai_order_panel.gd` 只建一个全宽「求援」按钮，点击进入地图选点；`order_requested` 信号删除，统一走 `pick_requested("reinforce", ...)`。
+3. **命令链**：`input_controller` 的 `ai_reinforce` 选点发出 `ai_order(order="reinforce", x, y)`；`world.set_ai_directive()` 接受并校验同方 / commander / 地图内 / 可通行点；快照仍通过 `ai_directives` 同步给客机。
+4. **AI 决策**：`ai_army._reinforce()` 按目标点可见敌军 × `need_ratio` − 已在场同方兵力决定派几队（1~`max_teams`）；家里被威胁时最多 1 队且不派守军；优先没在交战、离得近的队伍；目标清空且全部到点脱战 `clear_hold_sec` 秒后自动回 `auto`，最长 `timeout_sec`；无兵可派时保持指令并显示「无兵可派」。
+5. **配置**：新增 `ai.commander.reinforce`（`threat_radius / friendly_radius / need_ratio / max_teams / arrive_radius / clear_hold_sec / timeout_sec / allow_garrison / keep_home_when_threatened`）；`ui.ai_panel.buttons` 只剩 `reinforce`，`states` 增加待支援 / 支援中 / 已支援 / 无兵可派等文案。
+6. **测试**：更新 `test_ai_order_panel` / `test_coop_ai_teammate` / `test_ai_observer`，`test_ai_commander` 新增求援派兵与结束断言。
+
+
 ### 2026.11.19 页签不再记忆旧页 + 中心 X 点击动效
 
 1. **取消选中不换页**（用户口径）：去掉 `_page_memory` 的「每类选中上次停在哪一页」

@@ -1349,7 +1349,7 @@ func _is_convex_screen_poly(pts: PackedVector2Array) -> bool:
 	return absf(_screen_polygon_area(pts)) > 0.001
 
 
-## 合作 AI 队友的目标环（行军 / 屯兵）。
+## 合作 AI 队友的目标环（求援）。
 ##
 ## ★ 只画「与玩家同方的 commander」且当前指令有目标点的那些；develop / expand 没有点。
 ## ★ 这只是显示：命令本身走 `command_processor`，覆盖层不读输入、不改世界。

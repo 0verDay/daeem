@@ -3916,7 +3916,8 @@ func zone_kind_production(id: String) -> Dictionary:
 #     它们默认是**阵地性 AI**（缺省 `ai` 字段 = "garrison"）。
 #   · `ai.garrison`  —— 阵地性 AI 的行为参数（巡逻间隔 / 半径 / 脱战多久算闲 /
 #                        多久查一次招兵 / 满员门槛）。
-#   · `ai.reddot`    —— 红点性 AI 的行为参数（冷却 / 每波将领数 / 每位满编数 / 生成半径 / 波数）。
+#   · `ai.reddot`    —— 红点性 AI 的行为参数（时间表表达式 / 每波将领数 / 每位满编数 /
+#                        生成半径 / 波数 / 存活上限）。
 # ⚠️ 表是空的（老配置 / 手改删掉这一节）时**两种 AI 都不跑** —— 行为与加它们之前一致。
 # ⚠️ AI 阵营**没有资源库、没有大本营**（本轮口径）：`ai.factions[].base` 只是
 #    「将领出生锚点」，不建任何建筑；红点阵营靠关卡 `spawn_region` 刷兵。
@@ -4006,6 +4007,10 @@ func _cache_ai() -> void:
 	var rd_count: Variant = get_path_value("ai.reddot.general_count_expr")
 	if typeof(rd_count) != TYPE_STRING or String(rd_count).strip_edges() == "":
 		rd_count = "x"
+	# ★★ 附属兵数量表达式（空 = 用固定的 escort_count）：允许「随时间逐渐增加」。
+	var rd_escort_expr: Variant = get_path_value("ai.reddot.escort_count_expr")
+	if typeof(rd_escort_expr) != TYPE_STRING:
+		rd_escort_expr = ""
 	# spawn_tiles：config 缺省是空表（关卡才填）。兼容 `[x,y]` 数组 / 字典两种写法。
 	var rd_tiles: Array = []
 	var rd_tiles_raw: Variant = get_path_value("ai.reddot.spawn_tiles")
@@ -4028,9 +4033,15 @@ func _cache_ai() -> void:
 		"spawn_radius": maxf(0.0, num("ai.reddot.spawn_radius", 4.0)),
 		# 波数：0 = 无限（默认）；> 0 = 只刷这么多波。
 		"waves": maxi(0, int(num("ai.reddot.waves", 0.0))),
+		# ★★ 存活上限：0 = 无限（默认）；> 0 = 这一方活着的单位达到这个数就不再刷新的波。
+		#    只统计 `alive` 的单位（倒地未死的也算，避免再起后超上限）；一波里放不下
+		#    「1 位将领 + 满编附属」时整位跳过。
+		"max_alive": maxi(0, int(num("ai.reddot.max_alive", 0.0))),
 		# ★★ 函数式时间表：第 x 波的生成时间（分钟）/ 将领数（y = a·x + b）。
 		"wave_time_expr": String(rd_wave),
 		"general_count_expr": String(rd_count),
+		# ★★ 每波将领数上限：0 = 不设上限（默认）；> 0 时表达式算出来再夹一次。
+		"general_count_max": maxi(0, int(num("ai.reddot.general_count_max", 0.0))),
 		# ★★ 关卡选中的「红点生成地块」（config 里默认空 → 退回 spawn_region / 出生点）。
 		"spawn_tiles": rd_tiles,
 		# ★★ 关卡选中的「红点行军目标地块」（config 里默认空 → 退回单点 attack_target /
@@ -4039,6 +4050,10 @@ func _cache_ai() -> void:
 		# ★★ 将领类型权重（`[{general, weight}]`）与共享附属单位规格（`[{type, weight}]`）。
 		"general_weights": normalize_weight_list(get_path_value("ai.reddot.general_weights")),
 		"escort_count": maxi(0, int(num("ai.reddot.escort_count", 4.0))),
+		# ★★ 附属兵数量上限：0 = 不设上限（默认）；表达式 / 固定值算出来后再夹一次。
+		"escort_count_max": maxi(0, int(num("ai.reddot.escort_count_max", 0.0))),
+		# ★★ 附属兵数量表达式：空串 = 用固定 escort_count；否则每波按 y = a·x + b 求值。
+		"escort_count_expr": String(rd_escort_expr).strip_edges(),
 		"escort_types": normalize_weight_list(get_path_value("ai.reddot.escort_types")),
 	}
 

@@ -116,7 +116,7 @@ static func apply(world, cfg: ConfigRes, cmd: Dictionary) -> bool:
 		"spawn_enemy":
 			return apply_spawn_enemy(world, cmd)
 		"ai_order":
-			# ★★ 玩家给 AI 队友下达战略指令（行军 / 发展 / 扩张 / 屯兵）。
+			# ★★ 玩家给 AI 队友下达战略指令（2026.11.20 起面板只暴露「求援」）。
 			#    真正的校验在 world.set_ai_directive()：同方、commander、目标可通行。
 			return apply_ai_order(world, cmd)
 		"select":
@@ -587,6 +587,22 @@ static func order_group_attack_move(world, cfg: ConfigRes, group: Array, pt: Vec
 	return accepted
 
 
+## 整队攻击一栋建筑（AI 破墙用）：每个单位各自下 `order_attack_building`。
+## 不排阵型 —— 拆墙不需要队形，围着打就行。
+static func order_group_attack_building(world, cfg: ConfigRes, group: Array, b, player: bool = false) -> bool:
+	if b == null or not b.alive:
+		return false
+	var accepted := false
+	for u in group:
+		if u == null or not u.alive:
+			continue
+		if u.has_method("is_retaliating") and u.is_retaliating():
+			u.clear_retaliation()
+		if u.order_attack_building(world, cfg, b, player):
+			accepted = true
+	return accepted
+
+
 ## 一组单位的 id（`order_group_attack_move` 内部复用 `_collect_units` 的过滤用）。
 static func _ids_of(group: Array) -> Array:
 	var out: Array = []
@@ -744,7 +760,7 @@ static func apply_zone_recruit_cancel(world, _cfg: ConfigRes, cmd: Dictionary) -
 		String(cmd.get("faction", world.my_faction)))
 
 
-## ★★ 给 AI 队友下战略指令（面板四个按钮 → `ai_order`）。
+## ★★ 给 AI 队友下战略指令（面板「求援」按钮 → `ai_order`）。
 ##
 ## 命令里只有「哪一方 AI + 哪条指令 + 目标点」，没有单位 id、没有结果：
 ## 具体怎么行军 / 怎么扩张全在 `logic/ai_commander.gd` 里算。

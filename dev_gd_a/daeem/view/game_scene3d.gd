@@ -446,8 +446,8 @@ func start_level_vs_commander(campaign, level, my_faction: String,
 ##   · 世界带 `observer_mode = true`（本机是**纯 spectator / 看海**，不属于任何阵营；
 ##     被观察方只决定 HUD / 迷雾 / AI 面板看谁，不由本机出钱、也不按它判胜负）；
 ##   · 装配后关闭输入命令 / 命令卡，AI 面板默认只读。
-## `allow_ai_orders = true`（ai_test_2）时保留 AI 面板四颗指令按钮：
-##   玩家仍不能操作部队，但可以给被观察的 AI 下「行军 / 发展 / 扩张 / 屯兵」四条指令。
+## `allow_ai_orders = true`（ai_test_2）时保留 AI 面板的「求援」按钮：
+##   玩家仍不能操作部队，但可以给被观察的 AI 点一个地点请求支援。
 ## `reveal_all = true`（ai_test_2）时只给**玩家显示**开全图；AI 逻辑仍读正常迷雾。
 func start_ai_observer(level, allow_ai_orders: bool = false,
 		reveal_all: bool = false) -> bool:
@@ -512,7 +512,7 @@ func start_ai_observer(level, allow_ai_orders: bool = false,
 		if hud.ai_panel != null:
 			hud.ai_panel.sync()
 		if allow_ai_orders:
-			hud.show_notice("观战：AI 正在操作 %s · 可用右侧面板下达四条指令" % watched)
+			hud.show_notice("观战：AI 正在操作 %s · 可用右侧面板请求支援" % watched)
 		else:
 			hud.show_notice("观战：AI 正在操作 %s" % watched)
 	return true
@@ -2743,20 +2743,10 @@ func _build_hud() -> void:
 		hud.dialogue_skip_requested.connect(_on_hud_dialogue_skip_requested)
 	# ★★ 合作 AI 队友的浮动面板：只发信号，命令仍由 `_on_command` 统一走 command_processor。
 	if hud.ai_panel != null:
-		hud.ai_panel.order_requested.connect(_on_ai_order_requested)
 		hud.ai_panel.pick_requested.connect(_on_ai_order_pick)
 
 
-## AI 面板：发展 / 扩张（一键，不需要选点）。
-func _on_ai_order_requested(order: String, ai_faction: String) -> void:
-	_on_command({
-		"kind": "ai_order", "faction": world.my_faction,
-		"ai_faction": ai_faction, "order": order,
-		"x": -1.0, "y": -1.0,
-	})
-
-
-## AI 面板：行军 / 屯兵（进入地图选点模式；左键那一下由 input_controller 发 ai_order）。
+## AI 面板：求援（进入地图选点模式；左键那一下由 input_controller 发 ai_order）。
 func _on_ai_order_pick(order: String, ai_faction: String) -> void:
 	if input_ctrl != null:
 		input_ctrl.begin_ai_order_pick(order, ai_faction)
@@ -3022,10 +3012,8 @@ func _on_local_ui_changed() -> void:
 	# ★ AI 面板的选点提示跟着输入模式走（Esc / 右键退出时提示也要收掉）。
 	if hud != null and hud.ai_panel != null and input_ctrl != null:
 		var pick := ""
-		if input_ctrl.order_mode == "ai_march":
-			pick = "march"
-		elif input_ctrl.order_mode == "ai_mass":
-			pick = "mass"
+		if input_ctrl.order_mode == "ai_reinforce":
+			pick = "reinforce"
 		hud.ai_panel.set_pick_mode(pick)
 
 

@@ -460,7 +460,7 @@ func _roll_enemy_clan() -> String:
 
 ## ★★ 主界面「ai_test / ai_test_2」按钮：载入演示战役对应关卡，AI 接管被观察方，玩家观战。
 ## 不走战役过渡 / 阵营选择：这一关只有一个席位，且它本来就是给观察 AI 用的。
-## `allow_orders` = true（ai_test_2）时，观战仍允许用 AI 面板下四条指令；
+## `allow_orders` = true（ai_test_2）时，观战仍允许用 AI 面板下「求援」；
 ## `reveal_all` = true 时只给玩家显示开全图（AI 逻辑仍走正常迷雾）。
 func _on_ai_test_requested(campaign_id: String, level_id: String,
 		allow_orders: bool = false, reveal_all: bool = false) -> void:

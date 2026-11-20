@@ -71,6 +71,25 @@ const DEFAULTS := {
 		"arrive_radius": 3.0,
 		"hold_radius": 6.0,
 	},
+	# ★★ 2026.11.20：玩家唯一指令「求援」。
+	#   玩家点一个地点，AI 视情况派 1~max_teams 队过去支援：
+	#   · 目标点周围可见敌军 × need_ratio − 已在场同方兵力 = 还差多少；
+	#   · 家里正被威胁时最多派 1 队，且不把守军派出去；
+	#   · 目标点清空、所有队到点并脱战 clear_hold_sec 秒 → 自动回 auto；
+	#   · 最长 timeout_sec 秒；一支队都派不出来时保持指令、显示「无兵可派」。
+	"reinforce": {
+		"enabled": true,
+		"threat_radius": 6.0,        # 评估目标点敌军的半径（格）
+		"friendly_radius": 6.0,      # 评估目标点已有友军的半径（格）
+		"need_ratio": 1.15,          # 目标兵力 = 敌军 × 这个倍率
+		"max_teams": 2,              # 最多派几支队伍
+		"max_distance_tiles": 48.0,  # 超过这个距离的队伍不参与求援
+		"arrive_radius": 3.0,        # 进入这个半径算「到点」
+		"clear_hold_sec": 2.0,       # 目标清空且到点后，再驻守多久结束
+		"timeout_sec": 45.0,         # 求援任务最长时间（<= command_hold_sec）
+		"allow_garrison": true,      # 没有外勤队且家里安全时，允许派守军
+		"keep_home_when_threatened": true,
+	},
 	"expand": {
 		# ★★ 2026.10.24 重做：不再用「总兵力 × squad_ratio」这种跟全局上限绑定的口径，
 		#    改成「按**队**凑够人数再派」。单位都是**总人数（含将领本人）**。

@@ -1411,6 +1411,39 @@ def t_validation_overload() -> None:
     eq(out.get("reddot_ai", {}).get("march_tiles"), [[f.spot[0], f.spot[1]]],
        "★ `march_tiles` 原样写进 JSON（往返保留）")
 
+    # ★★ 每波将领数上限 / 附属兵数量表达式（2026.11.20）
+    entry4 = {"id": f.enemy, "ai": "reddot", "base": list(f.enemy_base),
+              "attack_target": {"kind": "zone", "zone": f.attack_zone},
+              "reddot_ai": {"general_count_max": 3,
+                            "escort_count_expr": "0.5x+0.5",
+                            "escort_count_max": 5}}
+    issues = check(base_level(factions=[entry4], start_buildings=[]))
+    ok(not has(issues, "reddot_general_max_invalid")
+       and not has(issues, "reddot_expr_invalid")
+       and not has(issues, "reddot_escort_max_invalid"),
+       "★ 合法的将领数上限 / 附属兵表达式 / 附属兵上限 → 不拦")
+    issues = check(base_level(factions=[{"id": f.enemy, "ai": "reddot",
+                                         "base": list(f.enemy_base),
+                                         "attack_target": {"kind": "zone", "zone": f.attack_zone},
+                                         "reddot_ai": {"general_count_max": -1}}],
+                              start_buildings=[]))
+    ok(has(issues, "reddot_general_max_invalid"),
+       "★ 将领数上限是负数 → reddot_general_max_invalid（拦）")
+    issues = check(base_level(factions=[{"id": f.enemy, "ai": "reddot",
+                                         "base": list(f.enemy_base),
+                                         "attack_target": {"kind": "zone", "zone": f.attack_zone},
+                                         "reddot_ai": {"escort_count_expr": "nope"}}],
+                              start_buildings=[]))
+    ok(has(issues, "reddot_expr_invalid"),
+       "★ 附属兵表达式解析不了 → reddot_expr_invalid（拦）")
+    issues = check(base_level(factions=[{"id": f.enemy, "ai": "reddot",
+                                         "base": list(f.enemy_base),
+                                         "attack_target": {"kind": "zone", "zone": f.attack_zone},
+                                         "reddot_ai": {"escort_count_max": -2}}],
+                              start_buildings=[]))
+    ok(has(issues, "reddot_escort_max_invalid"),
+       "★ 附属兵上限是负数 → reddot_escort_max_invalid（拦）")
+
 
 def t_validation_faction_color() -> None:
     """★★ 校验 18：**自定义阵营必须有配色**（否则游戏里整场一片紫）。

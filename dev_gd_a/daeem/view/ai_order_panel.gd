@@ -1,8 +1,8 @@
 ## ai_order_panel.gd —— 合作模式「AI 队友」的浮动指令面板。
 ##
-## 只读 world 的 AI 状态，只**发信号**（不直接改世界）：
-##   · order_requested(order, ai_faction)  —— 发展 / 扩张：点一下立刻下指令；
-##   · pick_requested(order, ai_faction)   —— 行军 / 屯兵：进入地图选点模式。
+## 2026.11.20 起玩家只有**一条**指令：
+##   · 求援：点按钮 → 进入地图选点 → 左键点地点 → 发 `pick_requested("reinforce", ...)`。
+## 面板只读 world 的 AI 状态，只**发信号**（不直接改世界）。
 ## 真正的命令由 `view/game_scene3d.gd` 组装并交给 `command_processor`。
 ##
 ## ★ 面板只在「本机有同方 commander」时出现；传统真人合作局 / 战役 / 自由对战不建它。
@@ -10,7 +10,6 @@
 ## ★ 拖动 / 折叠只改本地状态，不进快照。
 extends Control
 
-signal order_requested(order: String, ai_faction: String)
 signal pick_requested(order: String, ai_faction: String)
 
 const UiStyleRes = preload("res://view/ui_style.gd")
@@ -24,11 +23,11 @@ var _font: Font = null
 var _faction: String = ""
 ## ★★ 观战模式：面板只显示状态、不接命令（空 = 正常 AI 队友面板）。
 var _observer_faction: String = ""
-## ★★ 观战但仍授权下令（ai_test_2）：四颗指令按钮保持可点，只放行 AI 指令。
+## ★★ 观战但仍授权下令（ai_test_2）：求援按钮保持可点，只放行 AI 指令。
 var _observer_allow_orders: bool = false
 var _collapsed: bool = false
 var _w: float = 320.0
-var _h: float = 236.0
+var _h: float = 206.0
 var _ch: float = 40.0
 var _margin_r: float = 16.0
 var _margin_t: float = 96.0
@@ -56,14 +55,14 @@ func setup(p_cfg, p_font: Font) -> void:
 	cfg = p_cfg
 	_font = p_font
 	_w = _num("ui.ai_panel.width", 320.0)
-	_h = _num("ui.ai_panel.height", 236.0)
+	_h = _num("ui.ai_panel.height", 206.0)
 	_ch = _num("ui.ai_panel.collapsed_height", 40.0)
 	_margin_r = _num("ui.ai_panel.margin_right", 16.0)
 	_margin_t = _num("ui.ai_panel.margin_top", 96.0)
 	_right_reserve = _num("ui.ai_panel.right_reserve", 300.0)
 	if OS.has_feature("mobile"):
 		_w = _num("ui.ai_panel.mobile_width", 260.0)
-		_h = _num("ui.ai_panel.mobile_height", 210.0)
+		_h = _num("ui.ai_panel.mobile_height", 196.0)
 	mouse_filter = Control.MOUSE_FILTER_STOP
 	visible = false
 	_build()
@@ -76,8 +75,8 @@ func bind_world(p_world) -> void:
 	sync()
 
 
-## ★★ 观战：绑定被观察的 AI 阵营，四颗指令按钮默认置灰（只读）。
-## `allow_orders = true`（ai_test_2）时按钮保持可点，玩家可以给 AI 下四条指令。
+## ★★ 观战：绑定被观察的 AI 阵营，求援按钮默认置灰（只读）。
+## `allow_orders = true`（ai_test_2）时按钮保持可点，玩家可以给 AI 下「求援」。
 func set_observer(fid: String, allow_orders: bool = false) -> void:
 	_observer_faction = fid
 	_observer_allow_orders = allow_orders and fid != ""
@@ -133,22 +132,22 @@ func _build() -> void:
 
 	var grid := GridContainer.new()
 	grid.name = "Buttons"
-	grid.columns = 2
+	grid.columns = 1
 	grid.position = Vector2(12, _ch + 6)
-	grid.size = Vector2(_w - 24, 64)
+	grid.size = Vector2(_w - 24, 34)
 	grid.add_theme_constant_override("h_separation", int(_num("ui.ai_panel.button_gap", 6.0)))
 	grid.add_theme_constant_override("v_separation", int(_num("ui.ai_panel.button_gap", 6.0)))
 	add_child(grid)
 
-	var keys := ["march", "develop", "expand", "mass"]
+	var keys := ["reinforce"]
 	for k in keys:
-		var b := _button("Btn_" + k, _txt("buttons." + k, k))
-		b.custom_minimum_size = Vector2((_w - 24 - 6) / 2.0, 28)
+		var b := _button("Btn_" + k, _txt("buttons." + k, "求援"))
+		b.custom_minimum_size = Vector2(_w - 24, 28)
 		b.pressed.connect(_on_order.bind(k))
 		grid.add_child(b)
 		_buttons[k] = b
 
-	var y0 := _ch + 70
+	var y0 := _ch + 44
 	_lbl_directive = _label("Directive", "", int(_num("ui.ai_panel.font_size", 15.0)), UiStyleRes.text())
 	_lbl_directive.position = Vector2(14, y0)
 	_lbl_directive.size = Vector2(_w - 28, 22)
@@ -240,11 +239,11 @@ func _on_order(order: String) -> void:
 		return
 	if _observer_faction != "" and not _observer_allow_orders:
 		return
-	if order == "march" or order == "mass":
-		_sync_pick_hint(order)
-		pick_requested.emit(order, _faction)
-	else:
-		order_requested.emit(order, _faction)
+	# 2026.11.20：只剩「求援」一条指令，永远先选点。
+	if order != "reinforce":
+		return
+	_sync_pick_hint(order)
+	pick_requested.emit(order, _faction)
 	sync()
 
 
@@ -252,7 +251,7 @@ func _on_order(order: String) -> void:
 func set_pick_mode(order: String) -> void:
 	_pick_mode = order
 	if _hint != null:
-		_hint.text = _txt("target_pick_hint", "点击地图选择目标（右键 / Esc 取消）")
+		_hint.text = _txt("target_pick_hint", "点击地图选择求援地点（右键 / Esc 取消）")
 		_hint.visible = not _collapsed and order != ""
 	if _lbl_status != null and order != "":
 		_lbl_status.text = _state_text(order)
@@ -329,13 +328,15 @@ func _sync_state(read_only: bool) -> void:
 		_txt("status_labels.state", "状态"), state_text]
 	if _pick_mode != "":
 		_hint.visible = not _collapsed
-	_hint.text = _txt("target_pick_hint", "点击地图选择目标（右键 / Esc 取消）")
+	_hint.text = _txt("target_pick_hint", "点击地图选择求援地点（右键 / Esc 取消）")
 
 
 func _directive_text(st: Dictionary) -> String:
 	var kind := String(st.get("directive", ""))
 	var target: Vector2i = st.get("target", Vector2i(-1, -1))
 	match kind:
+		"reinforce":
+			return "求援至 (%d, %d)" % [target.x, target.y]
 		"march":
 			return "行军至 (%d, %d)" % [target.x, target.y]
 		"mass":

@@ -34,6 +34,8 @@ func _cases() -> void:
 	_test_garrison_free_recruit(cfg)
 	_test_garrison_revive(cfg)
 	_test_reddot_spawn(cfg)
+	_test_reddot_max_alive(cfg)
+	_test_reddot_growth(cfg)
 	_test_reddot_spawn_tiles(cfg)
 	_test_reddot_random(cfg)
 
@@ -42,11 +44,15 @@ func _test_config(cfg) -> void:
 	ok(cfg.ai_garrison_cfg().has("min_retinue"), "ai.garrison 有满编门槛")
 	ok(cfg.ai_reddot_cfg().has("wave_time_expr"), "ai.reddot 有生成时间表达式")
 	ok(cfg.ai_reddot_cfg().has("general_count_expr"), "ai.reddot 有将领数表达式")
+	ok(cfg.ai_reddot_cfg().has("general_count_max"), "ai.reddot 有每波将领数上限")
+	ok(cfg.ai_reddot_cfg().has("escort_count_expr"), "ai.reddot 有附属兵数量表达式")
+	ok(cfg.ai_reddot_cfg().has("escort_count_max"), "ai.reddot 有附属兵数量上限")
 	ok(cfg.ai_reddot_cfg().has("general_weights"), "ai.reddot 有将领类型权重")
 	ok(cfg.ai_reddot_cfg().has("escort_count"), "ai.reddot 有共享附属单位数量")
 	ok(cfg.ai_reddot_cfg().has("spawn_tiles"), "ai.reddot 有生成地块表")
 	ok(cfg.ai_reddot_cfg().has("spawn_radius"), "ai.reddot 有生成半径")
 	ok(cfg.ai_reddot_cfg().has("waves"), "ai.reddot 有波数")
+	ok(cfg.ai_reddot_cfg().has("max_alive"), "ai.reddot 有存活单位上限")
 
 	var list: Array = cfg.ai_factions()
 	ok(list.size() >= 1, "ai.factions 至少一条")
@@ -156,6 +162,48 @@ func _test_reddot_spawn(cfg) -> void:
 		if g.moving or not g.path.is_empty():
 			marching = true
 	ok(marching, "★ 刷出来的将领向目标点行军（已下 command）")
+
+func _test_reddot_max_alive(cfg) -> void:
+	var w = _reddot_world(cfg)
+	if w == null or w.reddot_states.is_empty():
+		return
+	var st: Dictionary = w.reddot_states[0]
+	(st["params"] as Dictionary)["max_alive"] = 5
+	RedDotAiRes.update(w, cfg, 121.0)
+	# 第一波 2 位将领 × (1+3) = 8 人；上限 5 ⇒ 只放得下一整组 4 人。
+	eq(_units_of(w, "E1").size(), 4, "★ 存活上限内只刷一整组（1 将领 + 3 附属）")
+	eq(_generals_of(w, "E1").size(), 1, "★ 放不下第二组时整位跳过，不刷半支部队")
+	RedDotAiRes.update(w, cfg, 400.0)
+	eq(_units_of(w, "E1").size(), 4, "★ 已达到上限 ⇒ 后续波次不再增加单位")
+	# 打光之后允许重新补刷（上限不是「总波数」）。
+	for u in _units_of(w, "E1"):
+		u.alive = false
+	RedDotAiRes.update(w, cfg, 400.0)
+	ok(_units_of(w, "E1").size() > 0, "★ 红点被打光后，后续波次会重新补到上限")
+
+
+## ★★ 2026.11.20：将领数可以封顶（general_count_max），但附属兵数量可以按波次逐渐增加
+## （escort_count_expr）。这里验两件事同时生效。
+func _test_reddot_growth(cfg) -> void:
+	var w = _reddot_world(cfg)
+	if w == null or w.reddot_states.is_empty():
+		return
+	var params: Dictionary = (w.reddot_states[0] as Dictionary)["params"]
+	params["general_count_max"] = 3
+	params["escort_count_expr"] = "x"
+	params["escort_count_max"] = 2
+	# 关卡探针：wave x+1（第 1 波 2min）/ 将领 x+1（2,3,4…）。
+	RedDotAiRes.update(w, cfg, 121.0)
+	eq(_generals_of(w, "E1").size(), 2, "第 1 波 2 位将领")
+	eq(_units_of(w, "E1").size(), 4, "第 1 波附属兵 1/位 ⇒ 2×(1+1) = 4 人")
+	RedDotAiRes.update(w, cfg, 60.0)
+	eq(_generals_of(w, "E1").size(), 5, "第 2 波再刷 3 位将领")
+	eq(_units_of(w, "E1").size(), 13, "第 2 波附属兵 2/位 ⇒ 再 +9 人")
+	RedDotAiRes.update(w, cfg, 60.0)
+	eq(_generals_of(w, "E1").size(), 8, "★ 第 3 波将领数被上限夹到 3（不是 4）")
+	eq(_units_of(w, "E1").size(), 22,
+		"★ 第 3 波表达式给出 3 个附属兵，但被 escort_count_max 夹到 2 ⇒ 再 +9 人")
+
 
 func _test_reddot_spawn_tiles(cfg) -> void:
 	var w = _reddot_world(cfg)

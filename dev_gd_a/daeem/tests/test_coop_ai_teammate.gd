@@ -50,25 +50,24 @@ func _run() -> void:
 		panel.sync()
 		ok(panel.visible, "★ 有 AI 队友时面板可见")
 		eq(String(panel._faction), "F2", "面板绑定 F2")
-		ok(panel._buttons.has("march") and panel._buttons.has("develop")
-			and panel._buttons.has("expand") and panel._buttons.has("mass"), "面板四个按钮")
-		# 发展：一键指令 → command_processor → world
-		panel.order_requested.emit("develop", "F2")
-		eq(String(game.world.ai_directive_of("F2").get("kind", "")), "develop", "面板发 develop")
-		# 行军：进入选点模式
-		panel.pick_requested.emit("march", "F2")
-		eq(String(game.input_ctrl.order_mode), "ai_march", "★ 行军进入 AI 选点模式")
+		ok(panel._buttons.size() == 1 and panel._buttons.has("reinforce"),
+			"★ 面板只剩一个「求援」按钮")
+		# 求援：进入选点模式
+		panel.pick_requested.emit("reinforce", "F2")
+		eq(String(game.input_ctrl.order_mode), "ai_reinforce", "★ 求援进入 AI 选点模式")
 		eq(String(game.input_ctrl.ai_order_faction), "F2", "选点绑定 F2")
 		# 模拟点地图：左键那一下由 input_controller 发 ai_order
 		game.input_ctrl.mouse_world = Vector2(10.5, 10.5)
 		game.input_ctrl._issue_order_click()
-		eq(String(game.world.ai_directive_of("F2").get("kind", "")), "march", "★ 点地图后下达 march")
+		eq(String(game.world.ai_directive_of("F2").get("kind", "")), "reinforce",
+			"★ 点地图后下达 reinforce")
 		eq(String(game.input_ctrl.order_mode), "", "选点模式结束")
 
 	# --- 指令拒绝：非同一方 / 非 commander ---
 	game._on_command({"kind": "ai_order", "faction": "F1", "ai_faction": "F2",
-		"order": "march", "x": 9999.0, "y": 0.0})
-	eq(String(game.world.ai_directive_of("F2").get("kind", "")), "march", "非法点不覆盖旧指令")
+		"order": "reinforce", "x": 9999.0, "y": 0.0})
+	eq(String(game.world.ai_directive_of("F2").get("kind", "")), "reinforce",
+		"非法点不覆盖旧指令")
 
 	# --- 跑几秒：AI 自己动、面板状态更新 ---
 	for i in 30:

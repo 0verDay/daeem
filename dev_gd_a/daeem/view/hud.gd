@@ -1805,7 +1805,7 @@ func _build_ai_panel() -> void:
 
 
 ## ★★ 观战：玩家不下命令，右下命令卡与页签整块收起；AI 面板保留。
-## `allow_ai_orders = true`（ai_test_2）时 AI 面板四颗指令按钮仍可点，其余仍是只读。
+## `allow_ai_orders = true`（ai_test_2）时 AI 面板「求援」按钮仍可点，其余仍是只读。
 func set_observer(on: bool, allow_ai_orders: bool = false) -> void:
 	observer_mode = on
 	if command_card != null:

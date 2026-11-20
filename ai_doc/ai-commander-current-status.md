@@ -14,13 +14,13 @@ AI 指挥官（`commander`）是第三种 AI，和 `garrison`、`reddot` 并列�
 | `logic/ai_build.gd` | 大本营升级、科技、区划特化、哨塔（★ 木墙 / 石墙已不再由 AI 建造） |
 | `logic/ai_economy.gd` | 经济评分、保留金、富余判断 |
 | `logic/ai_profile.gd` | 默认参数；与 `data/config.json` 的 `ai.commander` 合并 |
-| `logic/ai_observer` / `view/ai_order_panel.gd` | 观战与四条玩家指令 |
+| `logic/ai_observer` / `view/ai_order_panel.gd` | 观战与玩家「求援」指令 |
 
 ## 2. 每 tick 的顺序
 
 控制器按不同 interval 分派，不是所有逻辑每帧都跑：
 
-1. **军队**（`army_interval_sec`，默认 0.6s，`ai_army._auto()`）：
+1. **军队**（`army_interval_sec`，默认 1.0s，普通难度 ×1.2 ⇒ 约 1.2s，`ai_army._auto()`）：
    守军 / 轮换 → 开局探索 → 回撤 → 缺兵回人口区 → 避战 →
    继续进攻 / 扩张 / 进攻判定 → 清空区划占领 → 侦察 →
    前线守备 → 区划布防 → 巡逻。
@@ -94,13 +94,28 @@ AI 指挥官（`commander`）是第三种 AI，和 `garrison`、`reddot` 并列�
 - 将领交战时，`_cohesion_tick()` 只把后方停住的附属兵用普通移动拉向将领，不打断将领当前目标。
 - 受击反应有冷却和模式锁；锁定期内其它调度不抢方向盘。
 
-### 4.5 行军指令的主动结束
+### 4.5 行军指令的主动结束（内部 / 旧路径）
 
 - 玩家「行军」不再只能等 `command_hold_sec`（默认 60 秒）到期。
-- 每个 army tick（默认 0.6 秒）检查一次：**所有被派出的队**都进入目标点 `march.arrive_radius`（3 格）、没有任何队还挂着 `target` / `target_building`、且目标点 `march.hold_radius`（7 格）内**没有可见敌人** → 立即 `world.end_ai_directive()` 回到 `auto`。
+- 每个 army tick（普通难度约 1.2 秒）检查一次：**所有被派出的队**都进入目标点 `march.arrive_radius`（3 格）、没有任何队还挂着 `target` / `target_building`、且目标点 `march.hold_radius`（7 格）内**没有可见敌人** → 立即 `world.end_ai_directive()` 回到 `auto`。
 - 仍有敌人 / 仍在交战 / 还有队伍没到点 → 继续行军，最迟 60 秒到期；`end_when_clear=false` 可关掉提前结束。
 - 结束后面板会有 2.5 秒「已抵达」状态；目标点是敌方区划中心时，`auto` 的 `_capture_cleared_zone_tick()` 会接续读条，不会凭空放弃占领。
 - 「屯兵」(`mass`) **不加**这条：它本来就是集结驻守，仍只靠 60 秒到期。
+
+### 4.6 玩家「求援」指令（2026.11.20）
+
+- 玩家面板现在只剩 **求援** 一个按钮：点按钮 → 点地图 → `ai_order`（`order=reinforce`）。
+- AI 视情况派 **1 ~ `reinforce.max_teams`（默认 2）** 支队伍：
+  - 目标点周围可见敌军 × `need_ratio`（1.15）− 已在场同方兵力（含玩家部队，将领算 2）= 还差多少；
+  - 一队都没派时至少派 1 队；已在场兵力足够时不再加派；
+  - 家里正被威胁时最多派 1 队，且不派守军；
+  - 选队优先级：没在交战 > 离目标近；远程队有敌人时停在射程外。
+- 被派出的队持续压向求援点；目标点清空、所有队进入 `arrive_radius`（3 格）且脱战满
+  `clear_hold_sec`（2 秒）→ 自动结束回 `auto`。
+- 最长 `timeout_sec`（45 秒）；一支队都派不出来时**不结束指令**，面板显示「无兵可派」，
+  下一 tick 继续重试；`command_hold_sec`（60 秒）仍是最终兜底。
+- 旧的 `march / develop / expand / mass` 仍保留在 `world.set_ai_directive()` 与
+  `ai_army` 里作为内部 / 旧测试路径，但**不再由玩家面板暴露**。
 
 ## 5. 资源与建造优先级
 

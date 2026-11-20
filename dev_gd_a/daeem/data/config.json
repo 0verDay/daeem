@@ -579,23 +579,20 @@
         "  按钮文案与提示都在这里，view 里不写死中文。"
       ],
       "width": 320.0,
-      "height": 236.0,
+      "height": 206.0,
       "margin_right": 16.0,
       "margin_top": 96.0,
       "right_reserve": 300.0,
       "collapsed_height": 40.0,
       "mobile_width": 260.0,
-      "mobile_height": 210.0,
+      "mobile_height": 196.0,
       "font_size": 15,
       "title_font_size": 18,
       "button_gap": 6.0,
-      "target_pick_hint": "点击地图选择目标（右键 / Esc 取消）",
+      "target_pick_hint": "点击地图选择求援地点（右键 / Esc 取消）",
       "title": "AI 队友",
       "buttons": {
-        "march": "行军",
-        "develop": "发展",
-        "expand": "扩张",
-        "mass": "屯兵"
+        "reinforce": "求援"
       },
       "status_labels": {
         "directive": "指令",
@@ -604,6 +601,13 @@
         "state": "状态"
       },
       "states": {
+        "reinforce": "待支援",
+        "reinforcing": "支援中",
+        "reinforced": "已支援",
+        "no_troops": "无兵可派",
+        "timeout": "支援超时",
+        "invalid": "目标无效",
+        "disabled": "求援已关闭",
         "march": "行军中",
         "mass": "集结中",
         "develop": "发展",
@@ -617,6 +621,7 @@
         "saving": "攒钱中",
         "expanding": "扩张中",
         "assault": "进攻",
+        "breaking_wall": "破墙中",
         "regroup": "回撤整备",
         "rotating": "守军轮换",
         "retreating": "职能后撤",
@@ -2660,7 +2665,7 @@
       "★ 本体（body）：建筑真正**占地方**的那块方块，永远**居中**放在自己那一格里，",
       "  边长 = body_scale × 格宽。渲染与碰撞读的是同一个数（view 那边不许再写内缩量）。",
       "  规则（手玩定的）：普通建筑本体挡**敌方**单位、不挡己方；本体之外的缝可以走。",
-      "  wall / stone_wall = 1.0：城墙填满整格，且**不分阵营阻挡所有单位移动**（2026.11.19 起）；",
+      "  wall / stone_wall = 1.0：城墙填满整格，**按势力阻挡** —— 同阵营 / 盟友可穿过，敌对 / 中立被挡（2026.11.20 起）；",
       "  但城墙不阻挡远程攻击（箭矢 / 投掷物照常越过）。",
       "  base / tower / watch_tower = 0.6：格子四周各留 0.2 格，相邻两格的建筑之间留 0.4 格通道 ——",
       "  测试敌人的碰撞半径是 unit.collision_radius（0.18，直径 0.36），所以刚好挤得过去；",
@@ -2714,8 +2719,8 @@
       "attackable": false,
       "vision": 5,
       "color": "#7d7466",
-      "brief": "挡住一切地面部队的去路",
-      "desc": "木制城墙：填满整个地块；阻挡所有阵营的单位移动，但不阻挡远程攻击（箭矢 / 投掷物可以越过）"
+      "brief": "按势力阻挡：同方 / 盟友可通过，敌方被挡",
+      "desc": "木制城墙：填满整个地块；同阵营 / 盟友的单位可以穿过，敌对 / 中立单位被阻挡；不阻挡远程攻击（箭矢 / 投掷物可以越过）"
     },
     "tower": {
       "id": "tower", "name": "哨塔", "buildable": true,
@@ -2761,8 +2766,8 @@
       "attackable": false,
       "vision": 5,
       "color": "#9aa0a6",
-      "brief": "更厚的城墙，把要道彻底封死",
-      "desc": "石制城墙：血量更高；阻挡所有阵营的单位移动，但不阻挡远程攻击"
+      "brief": "更厚的城墙，按势力阻挡",
+      "desc": "石制城墙：血量更高；同阵营 / 盟友的单位可以穿过，敌对 / 中立单位被阻挡；不阻挡远程攻击"
     },
     "watch_tower": {
       "id": "watch_tower", "name": "警戒塔", "buildable": true,
@@ -4738,7 +4743,7 @@
       "  campaign = data/campaigns/ 下的目录名；",
       "  level    = 那场战役里 levels[] 的关卡 id；",
       "  ai_observer = true  → 走观战路径（AI 接管被观察方，玩家只看）；",
-      "  ai_observer_orders = true → 观战但仍允许用 AI 面板下四条指令（ai_test_2）；",
+      "  ai_observer_orders = true → 观战但仍允许用 AI 面板下「求援」（ai_test_2）；",
       "  ai_observer_reveal = true → 只给玩家显示开全图，AI 仍走正常迷雾（ai_test_2）；",
       "  direct = true → 跳过战役过渡画面（ai_test_battle 每次按下由 main.gd 随机选边，另一方交给 command AI）；",
       "  coop_ai = true → 直接开合作 AI 队友局：玩家第 1 席位，第 2 席位由 commander 接管（ai_test_hz）。",
@@ -5328,6 +5333,29 @@
         "arrive_radius": 3.0,
         "hold_radius": 6.0
       },
+      "reinforce": {
+        "_comment": [
+          "★★ 2026.11.20：玩家面板唯一指令「求援」。",
+          "  玩家点一个地点，AI 视情况派 1~max_teams 队过去支援：",
+          "  · 目标点周围可见敌军 × need_ratio − 已在场同方兵力 = 还差多少；",
+          "  · 已在场同方包括玩家自己的部队与 AI 友军（将领算 2，普通兵算 1）；",
+          "  · 家里正被威胁时最多派 1 队，且不把守军派出去；",
+          "  · 目标点清空、所有队到点并脱战 clear_hold_sec 秒 → 自动回 auto；",
+          "  · 最长 timeout_sec 秒；一支队都派不出来时保持指令、显示「无兵可派」。",
+          "  · 选队优先级：没在交战 > 离目标近；远程队有敌人时停在射程外。"
+        ],
+        "enabled": true,
+        "threat_radius": 6.0,
+        "friendly_radius": 6.0,
+        "need_ratio": 1.15,
+        "max_teams": 2,
+        "max_distance_tiles": 48.0,
+        "arrive_radius": 3.0,
+        "clear_hold_sec": 2.0,
+        "timeout_sec": 45.0,
+        "allow_garrison": true,
+        "keep_home_when_threatened": true
+      },
       "expand": {
         "_comment": [
           "★★ 2026.10.24 重做：扩张不再按「总兵力 × squad_ratio」凑数，",
@@ -5620,10 +5648,14 @@
         "      '2x+1' → 第 1 波 3min、第 2 波 5min。默认 'x'。",
         "  · general_count_expr：第 x 波刷几个将领 = y = a·x + b（默认 'x'）。",
         "    ★ 解析失败 / 空 → 退回上面的默认（'x'），并各刷至少 1 位。",
+        "  · general_count_max：每波将领数上限（0 = 不设上限）。表达式算出来后再夹一次。",
         "  · general_weights：每位将领**类型**的权重（目前 3 位占位将领）。",
         "      运行时会按权重和归一后再抽；编辑器要求权重和**恰好为 1**。",
-        "  · escort_count / escort_types：红点将领的**共享附属单位规格** ——",
-        "      每位红点将领生成 escort_count 个附属兵，兵种按 escort_types 的权重抽。",
+        "  · escort_count / escort_count_expr / escort_count_max / escort_types：红点将领的**共享附属单位规格** ——",
+        "      每位红点将领生成 escort_count 个附属兵；`escort_count_expr` 非空时每波按",
+        "      y = a·x + b 求值（可让附属兵随时间逐渐增加），解析失败退回固定 escort_count。",
+        "      `escort_count_max` 是每位将领的附属兵数量上限（0 = 不设上限）。",
+        "      兵种按 escort_types 的权重抽。",
         "  · spawn_tiles：关卡里选中的「红点生成地块」（[[x,y],...]）；**全部参与**，每位将领",
         "      随机落一格（允许叠兵）；落点上的**敌对建筑（除区划中心）会被立刻拆除**。",
         "      空 = 退回 spawn_region / 出生点。这是**关卡数据**，config 里默认空。",
@@ -5632,20 +5664,26 @@
         "      空 = 退回单点 attack_target → 再退回「离这一方最近的敌方区划中心 / 敌方大本营」。",
         "      这也是**关卡数据**，config 里默认空。",
         "  · steps 之外的旧键（cooldown_sec / generals / retinue）**已废弃**，运行时不再读；",
-        "    保留只是为了「旧数据不炸」与迁移期间对照。spawn_radius / waves 仍然生效。"
+        "    保留只是为了「旧数据不炸」与迁移期间对照。spawn_radius / waves / max_alive 仍然生效。",
+        "  · max_alive：红点阵营的**存活单位上限**（0 = 无限）。达到上限后新波次整位跳过，",
+        "    不会再刷出「1 位将领 + 半队附属」；按 alive 单位计数（倒地未死的也算，避免再起后超上限）。"
       ],
       "spawn_radius": 4,
       "waves": 0,
+      "max_alive": 0,
       "spawn_tiles": [],
       "march_tiles": [],
       "wave_time_expr": "x",
       "general_count_expr": "x",
+      "general_count_max": 0,
       "general_weights": [
         { "general": 1, "weight": 1 },
         { "general": 2, "weight": 1 },
         { "general": 3, "weight": 1 }
       ],
       "escort_count": 4,
+      "escort_count_expr": "",
+      "escort_count_max": 0,
       "escort_types": [
         { "type": "spearman", "weight": 1 }
       ],

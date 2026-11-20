@@ -151,6 +151,11 @@ var assault_active: bool = false
 var assault_point: Vector2 = Vector2.ZERO
 var assault_team_ids: Array[String] = []
 var assault_until: float = 0.0
+## ★★ 2026.11.20：玩家「求援」任务 —— 被派去支援某一地点的队伍、开始时间、
+##    目标点清空后的持续计时。`team_ids` 为空但指令仍在 = 暂时没兵可派，下一 tick 重试。
+var reinforce_team_ids: Array[String] = []
+var reinforce_started_at: float = -1.0
+var reinforce_clear_since: float = -1.0
 ## 打不下来 / 走不到的扩张目标（本轮内不再选它，避免卡在一个目标上）。
 var failed_expand_zones: Dictionary = {}
 ## 本局「曾经归己方」的区划 id（统计 zones_taken 用；只增不减）。
@@ -219,7 +224,7 @@ func setup(p_world, p_cfg, p_faction: String, p_profile: Dictionary) -> void:
 		"zones_taken": 0, "regroups": 0, "avoids": 0,
 		"role_retreats": 0, "counterattacks": 0,
 		"scouts": 0, "guards": 0, "zone_guards": 0, "recruit_recalls": 0,
-		"explores": 0,
+		"explores": 0, "wall_orders": 0,
 	}
 	patrol_index = 0
 	var pat: Dictionary = profile.get("patrol", {})
@@ -358,6 +363,9 @@ func on_directive_changed() -> void:
 	assault_active = false
 	assault_team_ids.clear()
 	assault_until = 0.0
+	reinforce_team_ids.clear()
+	reinforce_started_at = -1.0
+	reinforce_clear_since = -1.0
 	failed_expand_zones.clear()
 	regroup_ids.clear()
 	scout_missions.clear()
@@ -1391,6 +1399,8 @@ func current_status() -> String:
 			return "arrived" if _at_order_point() else "march"
 		"mass":
 			return "holding"
+		"reinforce":
+			return "reinforcing" if not reinforce_team_ids.is_empty() else "reinforce"
 		"expand":
 			return "expanding" if target_zone >= 0 else "expand"
 		"auto":
@@ -1446,6 +1456,7 @@ func panel_state() -> Dictionary:
 		"scouts": scout_missions.size(),
 		"posts": post_missions.size(),
 		"guards": post_missions.size() + guard_missions.size(),
+		"reinforce_teams": reinforce_team_ids.size(),
 	}
 	return out
 

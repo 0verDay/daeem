@@ -1,5 +1,5 @@
 ## test_ai_observer.gd —— 主界面 ai_test：AI 接管 F1，玩家观战（只读）。
-## 同时验证 ai_test_2：观战但四颗 AI 指令按钮可用（可给 AI 下令）。
+## 同时验证 ai_test_2：观战但「求援」按钮可用（可给 AI 下令）。
 extends "res://tests/test_case.gd"
 
 const GameSceneRes = preload("res://view/game_scene3d.gd")
@@ -65,7 +65,7 @@ func _run() -> void:
 	ok(panel != null and panel.visible, "★ 观战时 AI 面板可见")
 	if panel != null:
 		eq(String(panel._observer_faction), "F1", "面板绑定 F1")
-		ok((panel._buttons["develop"] as Button).disabled, "★ 观战面板按钮只读")
+		ok((panel._buttons["reinforce"] as Button).disabled, "★ 观战面板「求援」只读")
 	# 观战命令应被丢弃：发一条 move，世界不应出现玩家命令
 	var before := String(w.ai_directive_of("F1").get("kind", ""))
 	game._on_command({"kind": "move", "faction": "F1", "ids": [], "x": 1.0, "y": 1.0})
@@ -77,7 +77,7 @@ func _run() -> void:
 	game.queue_free()
 	await process_frame
 
-	# ★★ ai_test_2：观战，但四颗 AI 指令按钮可用（玩家可以给被观察的 AI 下指令）。
+	# ★★ ai_test_2：观战，但「求援」按钮可用（玩家可以给被观察的 AI 下指令）。
 	var level2 = camp.level("ai_test_2") if camp != null else null
 	ok(level2 != null, "（前提）ai_test_2 关卡能载入")
 	if level2 == null:
@@ -138,25 +138,19 @@ func _run() -> void:
 	if panel2 != null:
 		eq(String(panel2._observer_faction), "p1", "面板绑定 p1")
 		ok(panel2._observer_allow_orders, "★★ 面板处于「观战可下令」")
-		for k in ["march", "develop", "expand", "mass"]:
-			ok(not (panel2._buttons[k] as Button).disabled,
-				"★★ 四颗指令按钮可用：%s" % k)
+		ok(panel2._buttons.size() == 1 and panel2._buttons.has("reinforce"),
+			"★★ 面板只剩「求援」按钮且可用")
 	# 观战仍不放行部队命令。
 	var before2 := String(w2.ai_directive_of("p1").get("kind", ""))
 	game2._on_command({"kind": "move", "faction": "p1", "ids": [], "x": 1.0, "y": 1.0})
 	eq(String(w2.ai_directive_of("p1").get("kind", "")), before2,
 		"★★ 观战仍丢弃 move（只放行 ai_order）")
-	# 一键指令：扩张。
-	game2._on_command({"kind": "ai_order", "faction": "p1", "ai_faction": "p1",
-		"order": "expand", "x": -1.0, "y": -1.0})
-	eq(String(w2.ai_directive_of("p1").get("kind", "")), "expand",
-		"★★ ai_test_2 里可以给 AI 下「扩张」")
-	# 选点指令：行军（走 input_controller 的地图选点路径）。
-	game2.input_ctrl.begin_ai_order_pick("march", "p1")
+	# 求援：走 input_controller 的地图选点路径。
+	game2.input_ctrl.begin_ai_order_pick("reinforce", "p1")
 	game2.input_ctrl.mouse_world = Vector2(10.5, 10.5)
 	game2.input_ctrl._issue_order_click()
-	eq(String(w2.ai_directive_of("p1").get("kind", "")), "march",
-		"★★ ai_test_2 里可以在地图上给 AI 下「行军」")
+	eq(String(w2.ai_directive_of("p1").get("kind", "")), "reinforce",
+		"★★ ai_test_2 里可以在地图上给 AI 下「求援」")
 	game2.queue_free()
 	await process_frame
 

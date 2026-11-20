@@ -3679,9 +3679,47 @@ class EditorApp:
         self.status("将领 %d 权重 = %s" % (index, _fmt_num(weights[index - 1])))
         self.refresh_all()
 
+    def _reddot_general_max(self) -> int:
+        rd = self.reddot_params(False) or {}
+        return max(0, model_mod._as_int(rd.get(model_mod.REDDOT_GENERAL_MAX_KEY), 0))
+
+    def _set_reddot_general_max(self, text: str) -> None:
+        rd = self.reddot_params(True)
+        if rd is None:
+            return
+        v = max(0, model_mod._as_int(text, 0))
+        if v > 0:
+            rd[model_mod.REDDOT_GENERAL_MAX_KEY] = v
+        else:
+            rd.pop(model_mod.REDDOT_GENERAL_MAX_KEY, None)
+        lv = self.level()
+        if lv is not None:
+            lv.mark_declared("factions")
+        self.status("红点每波将领数上限 = %s" % (str(v) if v > 0 else "不设上限"))
+        self.refresh_all()
+
     def _reddot_escort_count(self) -> int:
         rd = self.reddot_params(False) or {}
         return model_mod._as_int(rd.get(model_mod.ESCORT_COUNT_KEY), -1)
+
+    def _reddot_escort_max(self) -> int:
+        rd = self.reddot_params(False) or {}
+        return max(0, model_mod._as_int(rd.get(model_mod.REDDOT_ESCORT_MAX_KEY), 0))
+
+    def _set_reddot_escort_max(self, text: str) -> None:
+        rd = self.reddot_params(True)
+        if rd is None:
+            return
+        v = max(0, model_mod._as_int(text, 0))
+        if v > 0:
+            rd[model_mod.REDDOT_ESCORT_MAX_KEY] = v
+        else:
+            rd.pop(model_mod.REDDOT_ESCORT_MAX_KEY, None)
+        lv = self.level()
+        if lv is not None:
+            lv.mark_declared("factions")
+        self.status("红点附属兵数量上限 = %s" % (str(v) if v > 0 else "不设上限"))
+        self.refresh_all()
 
     def _reddot_escort_types(self) -> List[dict]:
         rd = self.reddot_params(False) or {}
@@ -3796,8 +3834,12 @@ class EditorApp:
         self._entry_cell(isec, "将领数（x）",
                          str(rd.get(model_mod.REDDOT_COUNT_EXPR_KEY, "x")),
                          lambda text: self._set_reddot_expr(model_mod.REDDOT_COUNT_EXPR_KEY, text))
+        self._entry_cell(isec, "将领数上限",
+                         str(self._reddot_general_max()),
+                         self._set_reddot_general_max)
         self._hint(isec, "例：`x` → 第 1 波 1min；`x+1` → 第 1 波 2min、第 2 波 3min；"
-                         "`2x+1` → 第 1 波 3min。空着 = 用 config 的默认（x）。")
+                         "`2x+1` → 第 1 波 3min。空着 = 用 config 的默认（x）。"
+                         "将领数上限 0 = 不设上限；表达式算出来后再夹一次。")
 
         # ---- 将领类型权重 ----
         wsec = self._section("将领类型和权重", "目前只支持占位的三位将领；权重和必须为 1")
@@ -3816,8 +3858,16 @@ class EditorApp:
         # ---- 共享附属单位规格 ----
         ssec = self._section("附属单位规格（共享）",
                              "所有红点将领共用：生成数量 + 兵种权重（运行时当场随机生成）")
-        self._entry_cell(ssec, "生成数量", str(self._reddot_escort_count()),
+        self._entry_cell(ssec, "附属兵数（x）",
+                         str(rd.get(model_mod.REDDOT_ESCORT_EXPR_KEY, "")),
+                         lambda text: self._set_reddot_expr(model_mod.REDDOT_ESCORT_EXPR_KEY, text))
+        self._hint(ssec, "附属兵数可以写表达式让数量**逐波增加**（例 `0.5x+0.5` → 1,2,2,3…）；"
+                         "空着 = 用下面的固定数量。")
+        self._entry_cell(ssec, "固定数量", str(self._reddot_escort_count()),
                          self._set_reddot_escort_count)
+        self._entry_cell(ssec, "附属兵上限", str(self._reddot_escort_max()),
+                         self._set_reddot_escort_max)
+        self._hint(ssec, "附属兵上限 = 每位将领最多带几个附属兵；0 = 不设上限（默认）。")
         types = self._reddot_escort_types()
         for i, row in enumerate(types):
             r = tk.Frame(ssec, bg=UI["panel"])

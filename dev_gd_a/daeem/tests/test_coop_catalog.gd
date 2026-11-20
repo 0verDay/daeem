@@ -36,4 +36,8 @@ func _cases() -> void:
 
 	var e := CoopCatalogRes.find_entry(entries, "demo", "02_twin_line")
 	ok(not e.is_empty(), "find_entry 按 campaign/level 找到")
+	var de := CoopCatalogRes.find_entry(entries, "demo", "dengshen_changjie")
+	ok(not de.is_empty(), "★ 新合作关「登神长阶」在目录里")
+	if not de.is_empty():
+		eq(String(de.get("map_id", "")), "dengshen_changjie", "登神长阶使用同名地图")
 	ok(CoopCatalogRes.find_entry(entries, "demo", "不存在").is_empty(), "找不到 → 空字典")

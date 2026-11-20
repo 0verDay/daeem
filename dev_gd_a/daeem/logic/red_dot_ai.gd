@@ -8,11 +8,17 @@
 ##   2. 「生成频率 = y 和 x 的函数表达式（y = 波次时间 / min，x = 波次）」——
 ##      → `wave_time_expr`（默认 `x`），`logic/expr.gd` 解析 `y = a·x + b`。
 ##        例：`x` → 第 1 波 1min、第 2 波 2min；`x+1` → 第 1 波 2min、第 2 波 3min。
-##   3. 「生成的将领数 = 函数表达式」—— → `general_count_expr`（默认 `x`）。
+##   3. 「生成的将领数 = 函数表达式」—— → `general_count_expr`（默认 `x`）；
+##      每波最多刷 `general_count_max` 位（0 = 不设上限）。
 ##   4. 「将领类型和权重」—— → `general_weights`（每项 `{general, weight}`）。
+##      「附属兵数量」可以是固定值（`escort_count`），也可以随时间逐渐增加：
+##      `escort_count_expr` 非空时每波按 `y = a·x + b` 求值（解析失败 → 退回固定值）；
+##      每位将领最多带 `escort_count_max` 个附属兵（0 = 不设上限）。
 ##   5. 「选中地图地块作为红点生成地块」—— → `spawn_tiles`（优先于 `spawn_region` / 出生点）：
 ##      **所有已选地块都参与**，这一波每位将领在其中**随机落一格**（允许几位挤同一格）；
 ##      落点若立着**敌对建筑**（非盟友、且不是区划中心这类无敌建筑）→ **立刻拆除**再出生。
+##   6. 「红点总兵力上限」—— → `max_alive`（0 = 无限）：这一方活着的单位达到上限后，
+##      新波次整位跳过（不刷半支部队），避免红点无上限堆积。
 ##
 ## ★★ 与阵地性 AI（`logic/garrison_ai.gd`）的分工：
 ##   · 阵地性 —— 附属于区划、原地巡逻、无消耗招兵（守卫）；
@@ -120,7 +126,23 @@ static func _launch_wave(world, cfg: ConfigRes, st: Dictionary, wave: int, count
 	var count: int = 1
 	if not is_nan(raw):
 		count = maxi(1, int(round(raw)))
+	# ★★ 每波将领数上限（`general_count_max`，0 = 不设上限）。
+	var general_max: int = maxi(0, int(params.get("general_count_max", 0)))
+	if general_max > 0:
+		count = mini(count, general_max)
+	# 附属兵数量：`escort_count_expr` 非空 → 每波按 y = a·x + b 求值；否则用固定 escort_count。
 	var escort_count: int = maxi(0, int(params.get("escort_count", 0)))
+	var escort_expr := String(params.get("escort_count_expr", "")).strip_edges()
+	if escort_expr != "":
+		var raw_e := ExprRes.eval_linear(escort_expr, float(wave))
+		if not is_nan(raw_e):
+			escort_count = maxi(0, int(round(raw_e)))
+	# ★★ 附属兵数量上限（`escort_count_max`，0 = 不设上限）。
+	var escort_max: int = maxi(0, int(params.get("escort_count_max", 0)))
+	if escort_max > 0:
+		escort_count = mini(escort_count, escort_max)
+	var max_alive: int = maxi(0, int(params.get("max_alive", 0)))
+	var alive: int = _alive_count(world, faction)
 	var escort_types: Array = params.get("escort_types", [])
 	var general_weights: Array = params.get("general_weights", [])
 	var region: Variant = st.get("spawn_region", null)
@@ -133,6 +155,10 @@ static func _launch_wave(world, cfg: ConfigRes, st: Dictionary, wave: int, count
 	#    事件里只放**真的生成了的**那几位（被跳过的没有位置可播）。
 	var spawns: Array = []
 	for n in count:
+		# ★★ 存活上限（`max_alive`，0 = 无限）：连「1 位将领 + 满编附属」都放不下时，
+		#    这一波剩下的将领整位跳过 —— 不刷半支部队，避免上限被附属兵撑破。
+		if max_alive > 0 and alive + 1 + escort_count > max_alive:
+			break
 		var tile := _pick_spawn_tile(world, cfg, faction, region, spawn_tiles, serial, n)
 		if tile.x < 0:
 			continue                        # 这一波这一位没地方站 —— 跳过它
@@ -140,6 +166,7 @@ static func _launch_wave(world, cfg: ConfigRes, st: Dictionary, wave: int, count
 		var g = _spawn_general(world, cfg, faction, gi, serial, n, tile)
 		if g == null:
 			continue
+		alive += 1 + escort_count
 		spawns.append({"x": tile.x, "y": tile.y})
 		# ★★ 满编的随机附属单位：规格写进单位，并**当场生成**。
 		if escort_count > 0:
@@ -174,6 +201,18 @@ static func _launch_wave(world, cfg: ConfigRes, st: Dictionary, wave: int, count
 			"y": int(ev_pt.y),
 			"spawns": spawns,
 		})
+
+
+## 这一方现在**活着**的单位数（`max_alive` 的判据）。
+## ★ 倒地但没死的也计入：它们还会再起，若排除掉，下一波会按空位补刷，实际场上就会超上限。
+static func _alive_count(world, faction: String) -> int:
+	var n := 0
+	for u in world.units:
+		if u == null or not u.alive:
+			continue
+		if String(u.faction) == faction:
+			n += 1
+	return n
 
 
 ## 按 `general_weights` 抽这一位将领的**类型序号**（0 起）。

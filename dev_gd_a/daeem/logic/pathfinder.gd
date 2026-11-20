@@ -49,7 +49,7 @@ static func passable(map, buildings, cfg: ConfigRes, x: int, y: int, faction: St
 			return false
 	var b = buildings.get_cell(x, y)
 	if b != null:
-		# 城墙：对任何阵营都挡死；大本营/箭塔：格级两边都放行（本体另行处理）
+		# 城墙：按势力挡（同方 / 盟友放行）；大本营/箭塔：格级两边都放行（本体另行处理）
 		return b.blocks(faction) == false
 	return true
 
@@ -650,15 +650,22 @@ static func nearest_reachable_point(map, buildings, cfg: ConfigRes, from: Vector
 ## ⚠️ 旧实现是「在单位身边 2 格内找墙」，玩家用一整条墙拦断路线时根本找不到，敌人会发呆
 ##    （见 docs/pitfalls.md 3.3）。
 ##
+## @param type       空串 = 任何墙类（木墙 / 石墙 / 自定义 ..._wall）；否则只找这个 type。
 ## @return Building 或 null
-static func find_blocking_wall_toward(map, buildings, cfg: ConfigRes, building_list: Array, from: Vector2i, to: Vector2i, faction: String, type: String = "wall", crowd = null) -> Variant:
+static func find_blocking_wall_toward(map, buildings, cfg: ConfigRes, building_list: Array, from: Vector2i, to: Vector2i, faction: String, type: String = "", crowd = null) -> Variant:
 	var region = reachable_tiles(map, buildings, cfg, from, faction, crowd)
 	var best = null
 	var best_d := 0x7FFFFFFF
 	for b in building_list:
-		if not b.alive or b.type != type:
+		if not b.alive:
 			continue
-		if FactionRes.same_side(b.owner, faction):
+		if type == "":
+			if not b.has_method("is_wall_building") or not b.is_wall_building():
+				continue
+		elif b.type != type:
+			continue
+		# ★ 2026.11.20：城墙分势力阻挡 —— 同方 / 盟友的墙不是障碍，不拆。
+		if FactionRes.same_side_for_attack(b.owner, faction):
 			continue
 		var touches := false
 		# 「挨着我的可达区域」用八方向判（斜着贴住的那一段墙同样值得拆）

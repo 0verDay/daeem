@@ -300,11 +300,11 @@ func _test_ally_walls_pass(cfg) -> void:
 	var wall = BuildingRes.create(cfg, "wall", 0, 0, NPC)
 	ok(wall != null, "（前提）造一栋属于 %s 的城墙" % NPC)
 	if wall != null:
-		# ★★ 2026.11.19：城墙不再区分阵营，盟友 / 同阵营也一律阻挡。
-		ok(wall.blocks(AI), "★★ 盟友的城墙对盟友也阻挡（blocks = true）")
-		ok(wall.body_blocks(AI), "★★ 盟友的城墙本体也挡盟友（body_blocks = true）")
+		# ★★ 2026.11.20：城墙按势力阻挡 —— 盟友 / 同阵营可通过。
+		ok(not wall.blocks(AI), "★★ 盟友的城墙对盟友放行（blocks = false）")
+		ok(not wall.body_blocks(AI), "★★ 盟友的城墙本体也不挡盟友（body_blocks = false）")
 		ok(wall.blocks("p9-nobody"), "★ 非盟友 / 敌对仍被城墙挡死（blocks = true）")
-		ok(wall.blocks(NPC), "★★ 同阵营也照样阻挡")
+		ok(not wall.blocks(NPC), "★★ 同阵营可通过")
 	FactionRes.clear_allies()
 
 func require_world_create(cfg, with_ai: bool = true,

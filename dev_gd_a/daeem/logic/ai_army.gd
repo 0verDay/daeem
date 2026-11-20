@@ -41,6 +41,7 @@ const CommandProcessorRes = preload("res://logic/command_processor.gd")
 const FactionRes = preload("res://logic/faction.gd")
 const GridRes = preload("res://logic/grid.gd")
 const AiEconomyRes = preload("res://logic/ai_economy.gd")
+const PathfinderRes = preload("res://logic/pathfinder.gd")
 
 
 static func update(ai, dt: float) -> void:
@@ -72,6 +73,8 @@ static func update(ai, dt: float) -> void:
 			_march(ai)
 		"mass":
 			_mass(ai)
+		"reinforce":
+			_reinforce(ai)
 		"expand":
 			_expand(ai, true)
 		"auto":
@@ -864,6 +867,217 @@ static func _mass(ai) -> void:
 		if _react_locked(ai, String((t["leader"] as Object).id)):
 			continue
 		_order_team(ai, t, pt, true)
+
+
+## ★★ 2026.11.20：玩家「求援」。
+##
+## 面板只剩这一条玩家指令：玩家点一个地点，AI **视情况**派兵过去支援，
+## 而不是像行军那样无脑全军压上。判断分四步：
+##   1. 目标点周围的可见敌军 / 友军兵力（将领算 2，普通兵算 1）；
+##   2. 还差多少兵力：`敌人 × need_ratio − 已在场的友军`；
+##   3. 家里是否正在被威胁：是 → 最多只派 1 队，守军不外派；
+##   4. 从「能出门的外勤队」里按**没在交战 → 离得近**优先挑，最多 `max_teams` 队。
+##
+## 派出去的队一直压到求援点；目标点周围清空、所有队到点且脱战满
+## `clear_hold_sec` 秒后自动结束（回到 auto）。最长 `timeout_sec` 秒。
+## 一支队都派不出来时不结束指令，只显示「无兵可派」，下一 tick 继续重试。
+static func _reinforce(ai) -> void:
+	if not _has_order_point(ai):
+		_finish_reinforce(ai, "invalid")
+		return
+	var rc: Dictionary = ai.profile.get("reinforce", {})
+	if not bool(rc.get("enabled", true)):
+		_finish_reinforce(ai, "disabled")
+		return
+	var pt := Vector2(float(ai.order_x), float(ai.order_y))
+	var now: float = ai.world.time
+	if float(ai.reinforce_started_at) < 0.0:
+		ai.reinforce_started_at = now
+	var timeout := maxf(5.0, float(rc.get("timeout_sec", 45.0)))
+	if now - float(ai.reinforce_started_at) > timeout:
+		_finish_reinforce(ai, "timeout")
+		return
+	_prune_reinforce_teams(ai)
+	var threat_radius := maxf(1.0, float(rc.get("threat_radius", 6.0)))
+	var friendly_radius := maxf(1.0, float(rc.get("friendly_radius", 6.0)))
+	var enemy := _enemy_strength_near(ai, pt, threat_radius)
+	var friends := _friendly_strength_near(ai, pt, friendly_radius)
+	var need := _reinforce_need(enemy, friends, rc)
+	var sent := _reinforce_active_teams(ai)
+	if _reinforce_cleared(ai, pt, sent, enemy, rc):
+		_finish_reinforce(ai, "reinforced")
+		return
+	var max_teams := maxi(1, _i(rc, "max_teams", 2))
+	# 家里正在被威胁：优先守家，最多再派 1 队出去。
+	if bool(rc.get("keep_home_when_threatened", true)) and _find_threat(ai) != null:
+		max_teams = mini(max_teams, 1)
+	if sent.size() < max_teams and (sent.is_empty() or need > 0.0):
+		var picked := _pick_reinforce_teams(ai, pt, need, max_teams - sent.size(), rc)
+		for t in picked:
+			var leader = t.get("leader", null)
+			if leader == null:
+				continue
+			var lid := String(leader.id)
+			if ai.reinforce_team_ids.has(lid):
+				continue
+			ai.reinforce_team_ids.append(lid)
+			_order_team(ai, t, _reinforce_point_for(ai, leader, pt, enemy), true, true)
+		sent = _reinforce_active_teams(ai)
+	if sent.is_empty():
+		ai.note_status("no_troops")
+		return
+	for t in sent:
+		var leader = t.get("leader", null)
+		if leader == null or leader.is_downed():
+			continue
+		if _react_locked(ai, String(leader.id)):
+			continue
+		_order_team(ai, t, _reinforce_point_for(ai, leader, pt, enemy), true)
+	ai.note_status("reinforcing")
+
+
+## 当前正在执行求援任务的活队；阵亡 / 倒地的将领自动剔除。
+static func _reinforce_active_teams(ai) -> Array:
+	var out: Array = []
+	for id in ai.reinforce_team_ids:
+		var u = ai.world.unit_by_id(String(id))
+		if u == null or not u.alive or u.is_downed():
+			continue
+		out.append({"leader": u, "units": ai.world.group_of(u)})
+	return out
+
+
+## 剔除已经阵亡 / 倒地的求援队长（不结束指令：下一 tick 会尝试补派）。
+static func _prune_reinforce_teams(ai) -> void:
+	var keep: Array[String] = []
+	for id in ai.reinforce_team_ids:
+		var u = ai.world.unit_by_id(String(id))
+		if u != null and u.alive and not u.is_downed():
+			keep.append(String(id))
+	ai.reinforce_team_ids = keep
+
+
+## 目标点还差多少「兵力点」：敌人 × need_ratio − 已在场友军。
+## 返回 0 = 不需要再派人；调用方仍会在「一队都没派」时至少派 1 队。
+static func _reinforce_need(enemy: float, friends: float, rc: Dictionary) -> float:
+	var ratio := maxf(0.1, float(rc.get("need_ratio", 1.15)))
+	return maxf(0.0, enemy * ratio - friends)
+
+
+## 目标点周围**同方**（玩家 + AI 自己）的兵力估值（将领算 2，普通兵算 1）。
+static func _friendly_strength_near(ai, pt: Vector2, radius: float) -> float:
+	var r := maxf(0.0, radius)
+	var r2 := r * r
+	var n := 0.0
+	for u in ai.world.units:
+		if u == null or not u.alive or u.is_downed():
+			continue
+		if not FactionRes.same_side_for_attack(String(u.faction), ai.faction):
+			continue
+		if u.pos.distance_squared_to(pt) > r2:
+			continue
+		n += 2.0 if u.is_general() else 1.0
+	return n
+
+
+## 求援队伍实际走到的点：远程队有敌人时停在射程外，其它队直接进点。
+static func _reinforce_point_for(ai, leader, pt: Vector2, enemy: float) -> Vector2:
+	if enemy > 0.0 and _role_of(ai, leader) == "ranged":
+		return _role_target_point(ai, leader, pt)
+	return pt
+
+
+## 从能出门的外勤队里挑求援队。
+##
+## 优先级：没在交战 > 离目标近 > id 稳定；按需要强度凑够就停，最多 `slots` 队。
+## 没有外勤队且家里安全时，允许把守军派出去（`allow_garrison`，默认开）。
+static func _pick_reinforce_teams(ai, pt: Vector2, need: float, slots: int,
+		rc: Dictionary) -> Array:
+	if slots <= 0:
+		return []
+	var min_units := _min_units(ai)
+	var max_dist := maxf(1.0, float(rc.get("max_distance_tiles", 48.0)))
+	var pool: Array = ready_field_teams(ai, min_units)
+	if pool.is_empty() and bool(rc.get("allow_garrison", true)) \
+			and _find_threat(ai) == null:
+		var home = ensure_garrison(ai)
+		if home != null and team_total(ai, home) >= min_units:
+			pool.append({"leader": home, "units": ai.world.group_of(home)})
+	var rows: Array = []
+	for t in pool:
+		var leader = t.get("leader", null)
+		if leader == null or not leader.alive or leader.is_downed():
+			continue
+		var lid := String(leader.id)
+		if _react_locked(ai, lid) or _is_early_explorer(ai, lid):
+			continue
+		if ai.regroup_ids.has(lid):
+			continue
+		var d: float = leader.pos.distance_to(pt)
+		if d > max_dist:
+			continue
+		var fighting: bool = leader.target != null or leader.target_building != null
+		rows.append({
+			"team": t, "dist": d,
+			"strength": 2.0 + float(team_escorts(ai, leader)),
+			"fighting": fighting,
+		})
+	if rows.is_empty():
+		return []
+	rows.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		var fa := 1 if bool(a.get("fighting", false)) else 0
+		var fb := 1 if bool(b.get("fighting", false)) else 0
+		if fa != fb:
+			return fa < fb
+		var da := float(a.get("dist", 0.0))
+		var db := float(b.get("dist", 0.0))
+		if absf(da - db) > 1e-6:
+			return da < db
+		var la = (a["team"] as Dictionary).get("leader", null)
+		var lb = (b["team"] as Dictionary).get("leader", null)
+		return String(la.id) < String(lb.id))
+	var out: Array = []
+	var total := 0.0
+	for r in rows:
+		if out.size() >= slots:
+			break
+		out.append((r as Dictionary)["team"])
+		total += float((r as Dictionary).get("strength", 1.0))
+		if total >= need and not out.is_empty():
+			break
+	return out
+
+
+## 求援完成判据：目标点清空、所有被派队到点、且都脱战满 `clear_hold_sec` 秒。
+static func _reinforce_cleared(ai, pt: Vector2, sent: Array, enemy: float,
+		rc: Dictionary) -> bool:
+	if enemy > 0.0 or sent.is_empty():
+		ai.reinforce_clear_since = -1.0
+		return false
+	var arrive := maxf(0.5, float(rc.get("arrive_radius", 3.0)))
+	for t in sent:
+		var leader = t.get("leader", null)
+		if leader == null or not leader.alive or leader.is_downed():
+			ai.reinforce_clear_since = -1.0
+			return false
+		if leader.pos.distance_to(pt) > arrive:
+			ai.reinforce_clear_since = -1.0
+			return false
+		if leader.target != null or leader.target_building != null:
+			ai.reinforce_clear_since = -1.0
+			return false
+	var hold := maxf(0.0, float(rc.get("clear_hold_sec", 2.0)))
+	if float(ai.reinforce_clear_since) < 0.0:
+		ai.reinforce_clear_since = ai.world.time
+	return ai.world.time - float(ai.reinforce_clear_since) >= hold
+
+
+## 收口一条求援指令：清掉任务缓存，交给世界统一回到 auto（面板显示 reason）。
+static func _finish_reinforce(ai, reason: String) -> void:
+	ai.reinforce_team_ids.clear()
+	ai.reinforce_started_at = -1.0
+	ai.reinforce_clear_since = -1.0
+	ai.world.end_ai_directive(ai.faction, reason)
 
 
 ## ★★ 扩张：把队伍派到「AI 认为需要的相邻区划」的中心读条。
@@ -3428,13 +3642,58 @@ static func _order_team(ai, team: Dictionary, pt: Vector2, keep: bool = true,
 			continue
 		if u.has_method("is_retaliating") and u.is_retaliating():
 			u.clear_retaliation()
+	# ★★ 2026.11.20：先看「从队长到目标」有没有路。目标被敌方城墙围住时，
+	#    `order_group_attack_move` 可能把单位挪到最近可达点并返回成功 —— 只会站在墙外发呆。
+	#    所以这里先做一次寻路判定；没路就先拆挡路的那段墙。
+	var to_tile := Vector2i(floori(pt.x), floori(pt.y))
+	var path = PathfinderRes.find_path(
+		ai.world.map, ai.world.buildings, ai.cfg,
+		Vector2i(leader.tx, leader.ty), to_tile, ai.faction)
+	if path == null and _break_wall_toward(ai, team, pt):
+		return true
 	var ok: bool = CommandProcessorRes.order_group_attack_move(ai.world, ai.cfg, units, pt)
 	if ok:
 		ai.last_orders[String(leader.id)] = {"pt": pt, "t": ai.world.time}
 		ai.stats["orders"] = int(ai.stats.get("orders", 0)) + 1
 	else:
+		# ★★ 2026.11.20：路被敌方城墙挡死时，改成整队拆挡路的那一段墙。
+		#    拆开之后下一 tick 再按原目标行军。
+		if _break_wall_toward(ai, team, pt):
+			return true
 		ai.stats["order_failures"] = int(ai.stats.get("order_failures", 0)) + 1
 	return ok
+
+
+## 目标走不到时：找出「贴着当前可达区域、离目标最近」的敌方墙，整队去拆。
+## 只在 `_order_team` 的行军攻击失败时调用，不额外增加每 tick 的寻路开销。
+static func _break_wall_toward(ai, team: Dictionary, pt: Vector2) -> bool:
+	var leader = team.get("leader", null)
+	if leader == null or not leader.alive or leader.is_downed():
+		return false
+	# 已经在拆墙：别再每 tick 重跑一次可达区域 BFS，等这一段拆掉 / 目标丢失再说。
+	var tb = leader.target_building
+	if tb != null and is_instance_valid(tb) and tb.alive \
+			and tb.has_method("is_wall_building") and tb.is_wall_building() \
+			and not FactionRes.same_side_for_attack(tb.owner, ai.faction):
+		return true
+	var to := Vector2i(floori(pt.x), floori(pt.y))
+	var wall = PathfinderRes.find_blocking_wall_toward(
+		ai.world.map, ai.world.buildings, ai.cfg, ai.world.building_list,
+		Vector2i(leader.tx, leader.ty), to, ai.faction, "", null)
+	if wall == null:
+		return false
+	var units: Array = team.get("units", [])
+	if units.is_empty():
+		units = ai.world.group_of(leader)
+	if not CommandProcessorRes.order_group_attack_building(ai.world, ai.cfg, units, wall):
+		return false
+	ai.last_orders[String(leader.id)] = {
+		"pt": Vector2(float(wall.tx) + 0.5, float(wall.ty) + 0.5),
+		"t": ai.world.time,
+	}
+	ai.stats["wall_orders"] = int(ai.stats.get("wall_orders", 0)) + 1
+	ai.note_status("breaking_wall")
+	return true
 
 
 ## 整队**普通移动**（撤退 / 回撤补员 / 粘合回位用）：路上遇敌**不停**。

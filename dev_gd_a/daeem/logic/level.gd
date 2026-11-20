@@ -1310,8 +1310,10 @@ func _ck_ai_assign(config_ai: Array) -> void:
 ## 12) `start_units[]` 里挂了阵地性 AI 的项**都必须有** zone；
 ##     ★★ 将领条目的**附属单位规格**（`escort_count` / `escort_types`）必须合法。
 ##
-## ★★ 附属单位规格的判据见 `_ck_escort_spec()`（数量 ≤ 编制上限 / 权重和 = 1 /
-##    兵种都在 config 里）。本轮的 code 与编辑器 `tools/campaign_editor/model.py`
+## ★★ 附属单位规格的判据见 `_ck_escort_spec()`（权重和 = 1 / 兵种都在 config 里）。
+##    ★ 2026.11.20：关卡**摆放**的守军不再检查「数量 ≤ 编制上限」——地图作者可以摆
+##      超编守军（例如 `登神长阶` 的 `<12>`）；运行时招募仍受 `effective_retinue_cap` 限制。
+##    权重和 / 兵种存在仍校验；本轮的 code 与编辑器 `tools/campaign_editor/model.py`
 ##    逐字一致（编辑器、测试、运行时三边对暗号）。
 func _ck_start_units() -> void:
 	for u in start_units:
@@ -1325,17 +1327,9 @@ func _ck_start_units() -> void:
 			_add(SEV_BLOCK, "unit_no_faction", "摆放单位 (%d,%d) 没写 faction" % [int(ud["x"]), int(ud["y"])])
 		# ★★ 将领条目的**附属单位规格**（本轮新增）。
 		if ConfigRes.general_index_of(String(ud.get("kind", ""))) >= 0:
-			# ★★ 编制上限按**将领档**取（显式 `general_profile` → 兵种 `unit_type` →
-			#    kind 兜底），**不是**将领序号（序号只是名册号）——与
-			#    `world._place_faction_units` 同一口径。
-			var slot := -1
-			if cfg != null:
-				slot = int(ud.get("general_profile", -1)) - 1
-				if slot < 0:
-					slot = cfg.general_slot_of_type(String(ud.get("unit_type", "")))
-			if slot < 0:
-				slot = ConfigRes.general_index_of(String(ud.get("kind", "")))
-			_ck_escort_spec(ud, "(%d,%d)" % [int(ud["x"]), int(ud["y"])], "将领", slot)
+			# ★ 2026.11.20：关卡摆放的守军允许超编（cap_index = -1）。
+			#   编制上限只约束运行时招募，不再约束作者摆放。
+			_ck_escort_spec(ud, "(%d,%d)" % [int(ud["x"]), int(ud["y"])], "将领", -1)
 
 
 ## ★★ 校验一份「附属单位规格」（`escort_count` / `escort_types`）。
@@ -1400,11 +1394,36 @@ func _ck_reddot() -> void:
 			_add(SEV_BLOCK, "reddot_expr_invalid",
 				"红点阵营「%s」的将领数表达式「%s」无法解析（只支持 y=ax+b）"
 				% [fid, str(rd["general_count_expr"])])
+		# ★★ 每波将领数上限：0 = 不设上限；负数 / 非数字拦下。
+		if rd.has("general_count_max"):
+			var gmax: int = _int_or(rd["general_count_max"], -1)
+			if gmax < 0:
+				_add(SEV_BLOCK, "reddot_general_max_invalid",
+					"红点阵营「%s」的每波将领数上限必须是 ≥ 0 的整数" % fid)
+		# ★★ 附属兵数量上限：0 = 不设上限；负数 / 非数字拦下。
+		if rd.has("escort_count_max"):
+			var emax: int = _int_or(rd["escort_count_max"], -1)
+			if emax < 0:
+				_add(SEV_BLOCK, "reddot_escort_max_invalid",
+					"红点阵营「%s」的附属兵数量上限必须是 ≥ 0 的整数" % fid)
+		# ★★ 附属兵数量表达式（可空 = 用固定 escort_count）。
+		if rd.has("escort_count_expr"):
+			var eexpr := String(rd["escort_count_expr"]).strip_edges()
+			if eexpr != "" and not ExprRes.is_valid(eexpr):
+				_add(SEV_BLOCK, "reddot_expr_invalid",
+					"红点阵营「%s」的附属兵数量表达式「%s」无法解析（只支持 y=ax+b）"
+					% [fid, eexpr])
 		if rd.has("general_weights"):
 			var gw: Array = ConfigRes.normalize_weight_list(rd["general_weights"])
 			if not gw.is_empty() and absf(ConfigRes.weight_total(gw) - 1.0) > 0.001:
 				_add(SEV_BLOCK, "reddot_general_weights_sum",
 					"红点阵营「%s」的将领类型权重和不是 1" % fid)
+		# ★★ 存活上限：0 = 无限；负数 / 非数字一律拦下（运行时会被 maxi 夹成 0，但数据要干净）。
+		if rd.has("max_alive"):
+			var ma: int = _int_or(rd["max_alive"], -1)
+			if ma < 0:
+				_add(SEV_BLOCK, "reddot_max_alive_invalid",
+					"红点阵营「%s」的存活上限必须是 ≥ 0 的整数" % fid)
 		if rd.has("spawn_tiles") and map != null and typeof(rd["spawn_tiles"]) == TYPE_ARRAY:
 			for t in (rd["spawn_tiles"] as Array):
 				var tp := _tile_of(t)

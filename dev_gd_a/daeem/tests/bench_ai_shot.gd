@@ -32,10 +32,10 @@ func _run() -> void:
 		return
 	await _wait(40)
 	# 给 AI 一条行军指令：看面板状态 + 地图目标环
-	game.world.set_ai_directive("F2", "march", 10.5, 10.5, "F1")
+	game.world.set_ai_directive("F2", "reinforce", 10.5, 10.5, "F1")
 	if game.hud != null and game.hud.ai_panel != null:
 		game.hud.ai_panel.sync()
-		game.hud.ai_panel.set_pick_mode("march")
+		game.hud.ai_panel.set_pick_mode("reinforce")
 	await _wait(30)
 	var img: Image = root.get_texture().get_image()
 	if img == null:

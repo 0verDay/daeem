@@ -192,11 +192,11 @@ var selected_enemy = null
 ## ★ 不需要落点的命令（停止等）也不会留模式：发完立刻清空。
 var order_mode: String = ""
 ## 选点模式下要指挥的 AI 阵营（由 AI 面板经 game_scene 传进来）。
-## ★ 'ai_march' / 'ai_mass' 不需要选中单位：指挥的是 AI，不是玩家自己的部队。
+## ★ `ai_reinforce` 不需要选中单位：指挥的是 AI，不是玩家自己的部队。
 var ai_order_faction: String = ""
 ## ★★ 观战模式：只允许选择 / 相机操作，所有玩法命令一律不下发。
 var observer_mode: bool = false
-## ★★ 观战但仍允许 AI 面板下令（ai_test_2）：只放行 ai_march / ai_mass 选点。
+## ★★ 观战但仍允许 AI 面板下令（ai_test_2）：只放行 ai_reinforce 选点。
 var observer_ai_orders: bool = false
 
 ## 供渲染读取的悬停状态
@@ -793,8 +793,8 @@ func _finish_pan_drag(_event: InputEventMouseButton) -> void:
 ## ★ 右键**不再**参与拖视角，所以松手时永远按「单击 / 双击」下令。
 func _begin_right_click(event: InputEventMouseButton) -> void:
 	_right_order_pending = false
-	if observer_mode and observer_ai_orders \
-			and (order_mode == "ai_march" or order_mode == "ai_mass"):
+	# AI 面板的选点：右键 = 取消（与提示一致；观战 / 合作 / 单人路径都走这里）。
+	if order_mode == "ai_reinforce":
 		set_order_mode("")
 		return
 	_right_double = event.double_click
@@ -1920,7 +1920,7 @@ func set_order_mode(m: String) -> bool:
 		return false
 	if observer_mode:
 		# 观战授权（ai_test_2）：仍然允许 Esc / 右键取消 AI 选点。
-		if observer_ai_orders and (order_mode == "ai_march" or order_mode == "ai_mass"):
+		if observer_ai_orders and order_mode == "ai_reinforce":
 			order_mode = ""
 			ai_order_faction = ""
 			local_ui_changed.emit()
@@ -1943,19 +1943,16 @@ func set_observer(on: bool, allow_ai_orders: bool = false) -> void:
 	local_ui_changed.emit()
 
 
-## ★★ AI 面板的「行军 / 屯兵」选点模式：不需要选中单位，左键点地图后发一条 `ai_order`。
+## ★★ AI 面板的「求援」选点模式：不需要选中单位，左键点地图后发一条 `ai_order`。
 ## ★ 与 `set_order_mode` 分开：那个是「点同一格再点一次 = 退出」的按钮手感，
 ##   这里由面板直接决定进/退（同一条指令重复点应当**重新选点**，而不是静默退出）。
 func begin_ai_order_pick(order: String, ai_faction: String) -> void:
-	if order != "march" and order != "mass":
+	if order != "reinforce":
 		return
 	if observer_mode and not observer_ai_orders:
 		return
 	ai_order_faction = ai_faction
-	if order == "march":
-		order_mode = "ai_march"
-	else:
-		order_mode = "ai_mass"
+	order_mode = "ai_reinforce"
 	local_ui_changed.emit()
 
 
@@ -1984,17 +1981,14 @@ func _commandable_selected() -> Array:
 func _issue_order_click() -> void:
 	# ★★ AI 队友的选点：不要求选中单位，也不走下面「收集 ids」那一段。
 	#   观战授权（ai_test_2）时也走这条路 —— 这是观战里唯一允许发出的命令。
-	if order_mode == "ai_march" or order_mode == "ai_mass":
+	if order_mode == "ai_reinforce":
 		if observer_mode and not observer_ai_orders:
 			return
-		var ai_order := "march"
-		if order_mode == "ai_mass":
-			ai_order = "mass"
 		command_issued.emit({
 			"kind": "ai_order",
 			"faction": world.my_faction,
 			"ai_faction": ai_order_faction,
-			"order": ai_order,
+			"order": "reinforce",
 			"x": mouse_world.x,
 			"y": mouse_world.y,
 		})

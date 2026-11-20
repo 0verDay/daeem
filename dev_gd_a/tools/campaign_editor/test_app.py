@@ -827,6 +827,44 @@ def t_reddot_march_tiles(app, model) -> None:
 # [4] 进攻目标箭头（目标只在 JSON / ⑥ 红点页设）
 # ======================================================================
 
+def t_reddot_growth_limits(app, model) -> None:
+    """★★ 红点页：将领数上限 + 附属兵数量表达式（逐波增加）。"""
+    print("\n[3b] ★★ 红点页：将领数上限 / 附属兵数量表达式")
+    lv = level(app)
+    app.set_page("reddot")
+    app.root.update()
+    real_ask = app_module._ask_new_faction
+    app_module._ask_new_faction = lambda root, taken: ("growth_probe", "成长探针")
+    try:
+        app.do_new_reddot_faction()
+        app.root.update()
+    finally:
+        app_module._ask_new_faction = real_ask
+    fid = app.reddot_faction_id()
+    eq(fid, "growth_probe", "★ 建了一个红点阵营并成为当前编辑方")
+
+    app._set_reddot_general_max("3")
+    app._set_reddot_expr(M.REDDOT_ESCORT_EXPR_KEY, "0.5x+0.5")
+    app._set_reddot_escort_max("5")
+    rd = lv.faction(fid).reddot_ai or {}
+    eq(int(rd.get(M.REDDOT_GENERAL_MAX_KEY, 0)), 3, "★★ 将领数上限写进 reddot_ai")
+    eq(rd.get(M.REDDOT_ESCORT_EXPR_KEY), "0.5x+0.5", "★★ 附属兵数量表达式写进 reddot_ai")
+    eq(int(rd.get(M.REDDOT_ESCORT_MAX_KEY, 0)), 5, "★★ 附属兵数量上限写进 reddot_ai")
+    ok(("生成时间表", "将领数上限") in sectioned(app), "★★ 侧栏有「将领数上限」输入框")
+    ok(("附属单位规格（共享）", "附属兵数（x）") in sectioned(app),
+       "★★ 侧栏有「附属兵数（x）」表达式输入框")
+    ok(("附属单位规格（共享）", "附属兵上限") in sectioned(app),
+       "★★ 侧栏有「附属兵上限」输入框")
+
+    app._set_reddot_general_max("0")
+    app._set_reddot_expr(M.REDDOT_ESCORT_EXPR_KEY, "")
+    app._set_reddot_escort_max("0")
+    rd = lv.faction(fid).reddot_ai or {}
+    ok(M.REDDOT_GENERAL_MAX_KEY not in rd, "★ 上限填 0 = 不设上限（不写这个键）")
+    ok(M.REDDOT_ESCORT_EXPR_KEY not in rd, "★ 表达式清空 = 回退固定数量（不写这个键）")
+    ok(M.REDDOT_ESCORT_MAX_KEY not in rd, "★ 附属兵上限填 0 = 不设上限（不写这个键）")
+
+
 def t_same_field(app, model) -> None:
     print("\n[4] ★ 进攻目标箭头：终点 = 目标的区划中心；人话标签")
     f = _facts(app)
@@ -1078,12 +1116,12 @@ def t_escort_placement(app, model) -> None:
        "★★ 权重和 ≠1 被拦（escort_weights_sum），实际：%s" % codes)
     app._set_escort_weight(gen, 1, "0.5")
 
-    # ---- 7) 校验：数量 > 编制上限 → escort_count_over_cap ----
+    # ---- 7) 校验：关卡摆放的守军允许超过旧编制上限（2026.11.20）----
     cap = app.config.general_cap(1)
     app._set_escort_count(gen, str(cap + 1))
     codes = [i.code for i in app.run_checks()]
-    ok("escort_count_over_cap" in codes,
-       "★★ 数量超过编制上限被拦（escort_count_over_cap），实际：%s" % codes)
+    ok("escort_count_over_cap" not in codes,
+       "★ 摆放守军允许超过编制上限，实际：%s" % codes)
     app._set_escort_count(gen, "4")
 
     # ---- 8) 新页：区划 / 红点都能进，红点页复用画布 ----
@@ -1692,7 +1730,8 @@ def t_catalog_filter() -> None:
         ids = [str(app.level_tree.item(iid, "values")[1])
                for iid in app.level_tree.get_children()]
         eq(ids, ["mt", "dscj", "ai_test_2", "ai_test_battle", "between_moutains",
-                 "ai_test_easy", "ai_test_normal", "ai_test_hard", "ai_test_clan"],
+                 "ai_test_easy", "ai_test_normal", "ai_test_hard", "ai_test_clan",
+                 "dengshen_changjie"],
            "★ 关卡树只列有用表地图对应的关卡")
         ok(not app.level_tree.exists("lv:01_beachhead"), "★ 隐藏 01_beachhead")
         ok(not app.level_tree.exists("lv:02_twin_line"), "★ 隐藏 02_twin_line")
@@ -1743,6 +1782,7 @@ def main() -> int:
         t_build_slots(app, model)
         t_space_drag_pan(app, model)
         t_reddot_march_tiles(app, model)
+        t_reddot_growth_limits(app, model)
         t_same_field(app, model)
         t_ally_sides(app, model)
         t_new_reddot_faction(app, model)

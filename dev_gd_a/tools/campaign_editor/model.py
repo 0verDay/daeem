@@ -114,7 +114,7 @@ ESCORT_OF_KEY = "escort_of"
 
 #: ★★ 将领的**附属单位规格**（本轮新增，取代逐兵摆放）：生成数量 + 兵种权重表。
 #:
-#:   · `escort_count` = 这位将领开局生成的附属单位数量（≤ 该将领的编制上限）；
+#:   · `escort_count` = 这位将领开局生成的附属单位数量（关卡摆放允许超过编制上限；运行时补员仍受上限约束）；
 #:   · `escort_types` = `[{"type": <兵种 id>, "weight": <float>}]`：按权重随机抽兵种
 #:     （权重和必须为 1，校验会拦）。
 #:
@@ -146,9 +146,17 @@ GENERAL_PROFILE_KEY = "general_profile"
 #:   · `escort_count` / `escort_types`：红点将领的**共享附属单位规格**（同上）。
 REDDOT_WAVE_EXPR_KEY = "wave_time_expr"
 REDDOT_COUNT_EXPR_KEY = "general_count_expr"
+#: ★★ 每波将领数上限（0 = 不设上限）。
+REDDOT_GENERAL_MAX_KEY = "general_count_max"
 REDDOT_GENERAL_WEIGHTS_KEY = "general_weights"
 REDDOT_SPAWN_TILES_KEY = "spawn_tiles"
 REDDOT_MARCH_TILES_KEY = "march_tiles"
+#: ★★ 附属兵数量表达式（空 = 用固定的 `escort_count`）。
+REDDOT_ESCORT_EXPR_KEY = "escort_count_expr"
+#: ★★ 每位将领的附属兵数量上限（0 = 不设上限）。
+REDDOT_ESCORT_MAX_KEY = "escort_count_max"
+#: ★★ 红点**存活单位上限**（0 = 无限）：达到上限后新波次整位跳过。
+REDDOT_MAX_ALIVE_KEY = "max_alive"
 
 #: 编制上限的默认值（与 `logic/config.gd` 的 `GENERAL_CAP_DEFAULT` / UI 的 UNIT_CAP 同值）。
 GENERAL_CAP_DEFAULT = 11
@@ -3439,23 +3447,17 @@ def _tile_of(value: Any) -> Optional[Tuple[int, int]]:
 
 
 def _ck_escort_specs(add, lv: LevelModel, config: Optional[ConfigInfo]) -> None:
-    """★ 19) **将领条目的附属单位规格**：数量 ≤ 编制上限、权重和 = 1、兵种存在。
+    """★ 19) **将领条目的附属单位规格**：权重和 = 1、兵种存在。
 
-    code 与 `logic/level.gd` 的 `_ck_escort_spec` **逐字一致**（编辑器 / 测试 / 运行时对暗号）。
+    2026.11.20：关卡**摆放**的守军不再检查「数量 ≤ 编制上限」——地图作者可以
+    摆超编守军（例如「登神长阶」的 `<12>`）；运行时招募仍受编制上限约束。
+    其余 code 与 `logic/level.gd` 的 `_ck_escort_spec` **逐字一致**。
     """
     for u in lv.start_units:
         if not u.is_general():
             continue
-        # ★★ 编制上限按**将领档**取（由 `general_profile` → unit_type → kind 查出来），
-        #    **不是**将领序号 —— 与运行时 `logic/level.gd` 的 `_ck_start_units` 同一口径。
-        profile = -1
-        if config is not None:
-            profile = general_profile_of_unit(u, config) - 1
-        if profile < 0:
-            profile = general_kind_slot(u.kind)
-        cap = config.general_cap(profile + 1) if (config is not None and profile >= 0) else -1
         _ck_one_escort_spec(add, u.escort_count, u.escort_types,
-                            "将领 (%d,%d)" % (int(u.x), int(u.y)), cap, config)
+                            "将领 (%d,%d)" % (int(u.x), int(u.y)), -1, config)
 
 
 def _ck_one_escort_spec(add, count: Any, types: Any, where: str, cap: int,
@@ -3505,11 +3507,44 @@ def _ck_reddot(add, lv: LevelModel, info: Optional[MapInfo],
             add(SEV_BLOCK, "reddot_expr_invalid",
                 "红点阵营「%s」的将领数表达式「%s」无法解析（只支持 y=ax+b）"
                 % (fid, rd.get(REDDOT_COUNT_EXPR_KEY)))
+        if REDDOT_GENERAL_MAX_KEY in rd:
+            try:
+                gmax = int(rd.get(REDDOT_GENERAL_MAX_KEY))
+                ok_gmax = float(rd.get(REDDOT_GENERAL_MAX_KEY)) == float(gmax) and gmax >= 0
+            except (TypeError, ValueError):
+                ok_gmax = False
+            if not ok_gmax:
+                add(SEV_BLOCK, "reddot_general_max_invalid",
+                    "红点阵营「%s」的每波将领数上限必须是 ≥ 0 的整数" % fid)
+        if REDDOT_ESCORT_EXPR_KEY in rd:
+            eexpr = _as_str(rd.get(REDDOT_ESCORT_EXPR_KEY), "").strip()
+            if eexpr and not is_valid_expr(eexpr):
+                add(SEV_BLOCK, "reddot_expr_invalid",
+                    "红点阵营「%s」的附属兵数量表达式「%s」无法解析（只支持 y=ax+b）"
+                    % (fid, eexpr))
+        if REDDOT_ESCORT_MAX_KEY in rd:
+            try:
+                emax = int(rd.get(REDDOT_ESCORT_MAX_KEY))
+                ok_emax = float(rd.get(REDDOT_ESCORT_MAX_KEY)) == float(emax) and emax >= 0
+            except (TypeError, ValueError):
+                ok_emax = False
+            if not ok_emax:
+                add(SEV_BLOCK, "reddot_escort_max_invalid",
+                    "红点阵营「%s」的附属兵数量上限必须是 ≥ 0 的整数" % fid)
         if REDDOT_GENERAL_WEIGHTS_KEY in rd:
             gw = normalize_weight_list(rd.get(REDDOT_GENERAL_WEIGHTS_KEY))
             if gw and abs(weight_sum(gw) - 1.0) > WEIGHT_TOL:
                 add(SEV_BLOCK, "reddot_general_weights_sum",
                     "红点阵营「%s」的将领类型权重和不是 1（是 %.4f）" % (fid, weight_sum(gw)))
+        if REDDOT_MAX_ALIVE_KEY in rd:
+            try:
+                ma = int(rd.get(REDDOT_MAX_ALIVE_KEY))
+                ok_ma = float(rd.get(REDDOT_MAX_ALIVE_KEY)) == float(ma) and ma >= 0
+            except (TypeError, ValueError):
+                ok_ma = False
+            if not ok_ma:
+                add(SEV_BLOCK, "reddot_max_alive_invalid",
+                    "红点阵营「%s」的存活上限必须是 ≥ 0 的整数" % fid)
         if REDDOT_SPAWN_TILES_KEY in rd and info is not None:
             for t in _as_list(rd.get(REDDOT_SPAWN_TILES_KEY)):
                 tp = _tile_of(t)

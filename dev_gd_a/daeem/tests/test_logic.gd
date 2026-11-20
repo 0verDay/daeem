@@ -166,15 +166,15 @@ func _test_terrain_and_building_passability(world, cfg) -> void:
 		var wall = world.add_building("wall", wall_tile.x, wall_tile.y, "p1")
 		ok(wall != null, "城墙建造成功")
 		eq(wall.hp, 300.0, "城墙满血 300")
-		# ★★ 2026.11.19：城墙不再区分阵营，对任何单位都阻挡。
-		ok(wall.blocks("p1"), "城墙对己方也阻挡（blocks = true）")
+		# ★★ 2026.11.20：城墙按势力阻挡 —— 同方可通过，敌方被挡。
+		ok(not wall.blocks("p1"), "城墙对己方放行（blocks = false）")
 		ok(wall.blocks("enemy"), "城墙对敌方阻挡（blocks = true）")
-		ok(not PathfinderRes.passable(world.map, world.buildings, cfg, wall_tile.x, wall_tile.y, "p1"),
-			"己方也不能进城墙那一格")
+		ok(PathfinderRes.passable(world.map, world.buildings, cfg, wall_tile.x, wall_tile.y, "p1"),
+			"己方能进城墙那一格")
 		ok(not PathfinderRes.passable(world.map, world.buildings, cfg, wall_tile.x, wall_tile.y, "enemy"),
 			"敌方不能进城墙那一格")
-		ok(wall.body_blocks("p1") and wall.body_blocks("enemy"),
-			"城墙本体对双方都阻挡")
+		ok(not wall.body_blocks("p1") and wall.body_blocks("enemy"),
+			"城墙本体只挡敌方")
 		world.remove_building(wall, false)
 
 	var t2 = _find_free_tile(world, cfg, Vector2i(base_b.tx + 2, base_b.ty + 2))
@@ -246,8 +246,8 @@ func _test_pathfinding(world, cfg) -> void:
 		ok(upper.y < 9 and lower.y > 9, "城墙用例：取到的两点确实被墙分在两侧")
 		ok(PathfinderRes.find_path(world.map, world.buildings, cfg, upper, lower, "enemy") == null,
 			"★ 整条城墙把敌方路线切断（上下两半不可达）")
-		ok(PathfinderRes.find_path(world.map, world.buildings, cfg, upper, lower, "p1") == null,
-			"★★ 同一条城墙对己方也切断（不再区分阵营）")
+		ok(PathfinderRes.find_path(world.map, world.buildings, cfg, upper, lower, "p1") != null,
+			"★★ 同一条城墙对己方放行（按势力阻挡）")
 	var hole = wall_row[wall_row.size() / 2]
 	world.remove_building(hole, false)
 	ok(PathfinderRes.passable(world.map, world.buildings, cfg, hole.tx, hole.ty, "enemy"),
@@ -387,8 +387,8 @@ func _test_segment_clear(world, cfg) -> void:
 		var right = Vector2(wt.x + 1.5, wt.y + 0.5)
 		ok(not PathfinderRes.segment_clear(world.map, world.buildings, cfg, left, right, "enemy"),
 			"直线穿过城墙时对敌方为假")
-		ok(not PathfinderRes.segment_clear(world.map, world.buildings, cfg, left, right, "p1"),
-			"★★ 同一条直线对己方也为假（城墙不分阵营）")
+		ok(PathfinderRes.segment_clear(world.map, world.buildings, cfg, left, right, "p1"),
+			"★★ 同一条直线对己方放行（城墙按势力阻挡）")
 		world.remove_building(wall, false)
 
 	var corner = _find_corner_gap(world)

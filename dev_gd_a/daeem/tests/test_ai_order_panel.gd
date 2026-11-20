@@ -53,14 +53,17 @@ func _test_panel(cfg) -> void:
 	panel.bind_world(w)
 	ok(panel.visible, "★ 有 commander 时面板可见")
 	eq(String(panel._faction), "F2", "面板绑定 F2")
-	ok(panel._buttons.size() == 4, "四个指令按钮")
+	ok(panel._buttons.size() == 1, "★ 面板只剩一个「求援」按钮")
+	ok(panel._buttons.has("reinforce"), "按钮键是 reinforce")
 	# 模拟场景层：面板只发信号，由 game_scene 转成 ai_order 命令。
-	panel.order_requested.connect(func(order: String, fid: String):
-		w.set_ai_directive(fid, order, -1.0, -1.0, "F1"))
-	panel._on_order("develop")
-	eq(String(w.ai_directive_of("F2").get("kind", "")), "develop", "面板 develop 发出")
-	panel._on_order("march")
-	eq(String(panel._pick_mode), "march", "面板进入 march 选点提示")
+	var picked: Array = []
+	panel.pick_requested.connect(func(order: String, fid: String):
+		picked.append([order, fid]))
+	panel._on_order("reinforce")
+	eq(String(panel._pick_mode), "reinforce", "★ 求援进入选点提示")
+	eq(picked.size(), 1, "★ 求援发出 pick_requested")
+	eq(String(picked[0][0]), "reinforce", "信号 order = reinforce")
+	eq(String(picked[0][1]), "F2", "信号 ai_faction = F2")
 	panel.set_pick_mode("")
 	panel.sync()
 	ok(String(panel._lbl_directive.text).contains("指令"), "面板有指令状态行")

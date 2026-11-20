@@ -68,6 +68,11 @@
       "id": "ai_test_clan",
       "file": "levels/ai_test_clan.json",
       "name": "测试·新派系（义勇军 vs 教会军）"
+    },
+    {
+      "id": "dengshen_changjie",
+      "file": "levels/dengshen_changjie.json",
+      "name": "合作任务·登神长阶"
     }
   ],
   "unlock": "in_order"

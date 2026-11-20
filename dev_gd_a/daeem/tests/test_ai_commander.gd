@@ -33,6 +33,7 @@ func _cases() -> void:
 	_test_build_and_tech(cfg)
 	_test_directives(cfg)
 	_test_command_route(cfg)
+	_test_reinforce(cfg)
 	_test_defense(cfg)
 	_test_patrol(cfg)
 	_test_producer_reserved(cfg)
@@ -70,6 +71,7 @@ func _cases() -> void:
 	_test_instant_recruit_production(cfg)
 	_test_march_moves_army(cfg)
 	_test_march_early_end(cfg)
+	_test_wall_break(cfg)
 	_test_expand_target(cfg)
 	_test_auto_captures_zones(cfg)
 	_test_no_lone_wanderers(cfg)
@@ -392,6 +394,12 @@ func _test_directives(cfg) -> void:
 	eq(w.set_ai_directive("F2", "bogus", -1.0, -1.0, "F1"), "bad_order", "未知指令被拒")
 	ok(w.set_ai_directive("F2", "mass", 12.0, 12.0, "F1") == "", "mass 指令被接受")
 	ok(w.set_ai_directive("F2", "expand", -1.0, -1.0, "F1") == "", "expand 指令被接受")
+	eq(w.set_ai_directive("F2", "reinforce", 10.0, 10.0, "F1"), "", "★ 求援指令被接受")
+	eq(String(w.ai_directive_of("F2").get("kind", "")), "reinforce", "求援写回世界")
+	var rt: Variant = w.ai_directive_target("F2")
+	ok(rt != null, "★ 求援目标点可用于覆盖层 / 面板")
+	eq(w.set_ai_directive("F2", "reinforce", 9999.0, -1.0, "F1"), "out_of_map",
+		"地图外求援被拒")
 	# 水域不可通行：点水面应自动落到最近岸边，而不是拒掉。
 	var water := Vector2i(-1, -1)
 	for yy in w.map.rows:
@@ -437,6 +445,61 @@ func _test_command_route(cfg) -> void:
 	w.ai_directives["F2"]["until"] = w.time - 0.1
 	w.tick(0.1)
 	eq(String(w.ai_directive_of("F2").get("kind", "")), "auto", "★ 指令到期回到自主 auto")
+
+
+## ★★ 2026.11.20：玩家唯一指令「求援」—— 至少派一队、向目标移动、清场后回 auto。
+func _test_reinforce(cfg) -> void:
+	var w = _make_world(cfg)
+	if w == null:
+		ok(false, "求援测试世界")
+		return
+	var c = w.ai_commanders.get("F2", null)
+	var base = w.find_base_of("F2")
+	if c == null or base == null:
+		ok(false, "求援测试需要 F2 控制器 / 大本营")
+		return
+	# 开局期允许 1 人队出门；这里只验证「求援会派队」，不验证常规门槛。
+	w.time = 1.0
+	var spot: Vector2i = w._nearest_free_tile(base.tx, base.ty, "F2", 8)
+	if spot.x < 0:
+		ok(false, "求援测试找不到可通行点")
+		return
+	eq(w.set_ai_directive("F2", "reinforce",
+		float(spot.x) + 0.5, float(spot.y) + 0.5, "F1"), "", "求援指令接受")
+	var d: Dictionary = w.ai_directive_of("F2")
+	eq(String(d.get("kind", "")), "reinforce", "世界指令是 reinforce")
+	var pt := Vector2(float(d.get("x", 0.0)), float(d.get("y", 0.0)))
+	c._sync_order()
+	c._near_frame = -1
+	AiArmyRes._reinforce(c)
+	ok(c.reinforce_team_ids.size() >= 1, "★ 求援至少派出一支队伍")
+	var moved := false
+	for id in c.reinforce_team_ids:
+		var u = w.unit_by_id(String(id))
+		if u != null and (bool(u.has_attack_move) or bool(u.moving)):
+			moved = true
+			break
+	ok(moved, "★ 求援队开始向目标移动")
+	# 强制「已到点 + 目标清空」：把被派出的将领挪到目标点并清掉交战目标。
+	for id in c.reinforce_team_ids:
+		var u = w.unit_by_id(String(id))
+		if u == null:
+			continue
+		u.pos = pt
+		u.tx = int(floor(pt.x))
+		u.ty = int(floor(pt.y))
+		u.has_attack_move = false
+		u.moving = false
+		u.target = null
+		u.target_building = null
+	w.time += 3.0
+	c._near_frame = -1
+	AiArmyRes._reinforce(c)
+	w.time += 3.0
+	c._near_frame = -1
+	AiArmyRes._reinforce(c)
+	eq(String(w.ai_directive_of("F2").get("kind", "")), "auto",
+		"★ 目标清空且到点后，求援结束回到 auto")
 
 
 func _test_defense(cfg) -> void:
@@ -1366,6 +1429,79 @@ func _test_wall_and_upgrade(cfg) -> void:
 			break
 	ok(not any_upgrading, "★★ AI 不再升级木墙 / 哨塔")
 	ok(not c.stats.has("upgrades"), "★★ AI 统计里不再有 upgrades")
+
+
+## ★★ 2026.11.20：目标被敌方城墙围住时，AI 会先整队拆墙，而不是原地失败。
+func _test_wall_break(cfg) -> void:
+	var w = _make_world(cfg)
+	if w == null:
+		ok(false, "破墙测试世界")
+		return
+	var c = w.ai_commanders.get("F2", null)
+	if c == null:
+		ok(false, "破墙测试需要 F2 控制器")
+		return
+	# 找一块 3×3 空地，用敌方城墙围住中心；AI 从外面来。
+	var center := Vector2i(-1, -1)
+	for y in range(2, w.map.rows - 2):
+		for x in range(2, w.map.cols - 2):
+			var z0 = w.zones.zone_at(x, y)
+			if z0 == null:
+				continue
+			var ok3 := true
+			for dy in range(-1, 2):
+				for dx in range(-1, 2):
+					var zc = w.zones.zone_at(x + dx, y + dy)
+					if zc == null or int((zc as Dictionary).get("id", -1)) != int((z0 as Dictionary).get("id", -2)) \
+							or not w.map.terrain_walkable(x + dx, y + dy) \
+							or w.building_at(x + dx, y + dy) != null \
+							or w.zone_center_zone_at(x + dx, y + dy) != null:
+						ok3 = false
+						break
+				if not ok3:
+					break
+			if ok3:
+				center = Vector2i(x, y)
+				break
+		if center.x >= 0:
+			break
+	ok(center.x >= 0, "找得到一块 3×3 空地做破墙测试")
+	if center.x < 0:
+		return
+	# 城墙跟随区划归属：先把目标所在区划改成 enemy，墙才会保持敌方归属。
+	var zref = w.zones.zone_at(center.x, center.y)
+	if zref != null:
+		(zref as Dictionary)["owner"] = "enemy"
+		(zref as Dictionary)["progress_by"] = {"enemy": 1.0}
+		(zref as Dictionary)["progress"] = 1.0
+		(zref as Dictionary)["claimed_by"] = "building"
+		w.refresh_ownership()
+	var walls: Array = []
+	for dy in range(-1, 2):
+		for dx in range(-1, 2):
+			if dx == 0 and dy == 0:
+				continue
+			var b = w.add_building("wall", center.x + dx, center.y + dy, "enemy")
+			if b != null:
+				b.owner = "enemy"
+				walls.append(b)
+	eq(walls.size(), 8, "围出一圈敌方城墙")
+	# 围墙中心不可达，且城墙对 F2 是敌方。
+	ok(w.building_at(center.x, center.y) == null, "中心是空的")
+	var before := int(c.stats.get("wall_orders", 0))
+	eq(w.set_ai_directive("F2", "march",
+		float(center.x) + 0.5, float(center.y) + 0.5, "F1"), "", "向围墙中心下行军")
+	for i in 40:
+		w.tick(0.1)
+	ok(int(c.stats.get("wall_orders", 0)) > before,
+		"★ AI 被城墙挡住后会下破墙命令（实际 %d）" % int(c.stats.get("wall_orders", 0)))
+	var damaged := false
+	for b in walls:
+		if (b as Object).alive and float((b as Object).hp) < float((b as Object).hp_max):
+			damaged = true
+			break
+	ok(damaged or int(c.stats.get("wall_orders", 0)) > before,
+		"★ 破墙命令落到城墙上 / 城墙开始掉血")
 
 
 func _count_walls(w, faction: String) -> int:
